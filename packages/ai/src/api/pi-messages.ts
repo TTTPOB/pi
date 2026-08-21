@@ -242,12 +242,16 @@ function createEventConverter(model: Model<"pi-messages">, toolCallParsing: Stre
 				if (toolCallParsing !== "final") toolJson.set(event.contentIndex, "");
 				break;
 			case "toolcall_delta": {
-				if (toolCallParsing !== "final") {
-					const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
-					toolJson.set(event.contentIndex, json);
-					(partial.content[event.contentIndex] as ToolCall).arguments =
-						parseStreamingJson<ToolCall["arguments"]>(json);
+				if (toolCallParsing === "final") {
+					const content = [...partial.content];
+					content[event.contentIndex] = { ...(content[event.contentIndex] as ToolCall) };
+					// Preserve empty delta arguments if the producer reaches toolcall_end before the consumer drains the queue.
+					return { ...event, partial: { ...partial, content } };
 				}
+				const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
+				toolJson.set(event.contentIndex, json);
+				(partial.content[event.contentIndex] as ToolCall).arguments =
+					parseStreamingJson<ToolCall["arguments"]>(json);
 				break;
 			}
 			case "toolcall_end": {
