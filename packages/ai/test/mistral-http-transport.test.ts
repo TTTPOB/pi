@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { getModel } from "../src/compat.ts";
-import type { Context, FetchFunction, ProviderResponse } from "../src/types.ts";
+import type { Context, FetchFunction, ProviderResponse, ToolCall } from "../src/types.ts";
 
 function createSseResponse(events: unknown[], headers?: Record<string, string>): Response {
 	const body = `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\r\n\r\n")}\r\n\r\ndata: [DONE]\r\n\r\n`;
@@ -317,6 +317,59 @@ describe("Mistral HTTP transport", () => {
 			{ type: "toolCall", id: "abc123456", name: "lookup", arguments: { query: "pi" } },
 		]);
 		expect(message.usage).toMatchObject({ input: 7, output: 4, cacheRead: 3, cacheWrite: 0, totalTokens: 14 });
+	});
+
+	it("keeps raw tool argument deltas ordered and parses arguments at stream end", async () => {
+		const model = getModel("mistral", "mistral-large-latest");
+		const context: Context = {
+			messages: [{ role: "user", content: "Look up pi.", timestamp: 1 }],
+		};
+		const events = [
+			{
+				id: "response-final-tools",
+				model: model.id,
+				choices: [
+					{
+						index: 0,
+						finish_reason: null,
+						delta: {
+							tool_calls: [
+								{ id: "call_lookup", index: 0, function: { name: "lookup", arguments: '{"query":"p' } },
+							],
+						},
+					},
+				],
+			},
+			{
+				id: "response-final-tools",
+				model: model.id,
+				choices: [
+					{
+						index: 0,
+						finish_reason: "tool_calls",
+						delta: { tool_calls: [{ id: "call_lookup", index: 0, function: { arguments: 'i"}' } }] },
+					},
+				],
+			},
+		];
+		const fetch: FetchFunction = async () => createSseResponse(events);
+		const eventStream = streamMistral(model, context, { apiKey: "test", fetch, toolCallParsing: "final" });
+		const rawDeltas: string[] = [];
+		let toolCallEndArguments: Record<string, unknown> | undefined;
+
+		for await (const event of eventStream) {
+			if (event.type === "toolcall_delta") {
+				rawDeltas.push(event.delta);
+			} else if (event.type === "toolcall_end") {
+				toolCallEndArguments = structuredClone(event.toolCall.arguments);
+			}
+		}
+
+		const result = await eventStream.result();
+		const resultToolCall = result.content.find((block): block is ToolCall => block.type === "toolCall");
+		expect(rawDeltas).toEqual(['{"query":"p', 'i"}']);
+		expect(toolCallEndArguments).toEqual({ query: "pi" });
+		expect(resultToolCall?.arguments).toEqual({ query: "pi" });
 	});
 
 	it("parses SSE and UTF-8 sequences split across transport chunks", async () => {
