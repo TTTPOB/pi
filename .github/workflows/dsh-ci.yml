@@ -41,6 +41,9 @@ jobs:
       - name: Check formatting and lint
         run: npx biome check packages/ai
 
+      - name: Build Pi telemetry
+        run: npm run build --workspace=@earendil-works/pi-telemetry
+
       - name: Build Pi AI
         run: npm run build:offline --workspace=@earendil-works/pi-ai
 

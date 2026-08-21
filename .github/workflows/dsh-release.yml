@@ -62,6 +62,9 @@ jobs:
       - name: Hydrate model data
         run: npm run hydrate:model-data
 
+      - name: Build Pi telemetry
+        run: npm run build --workspace=@earendil-works/pi-telemetry
+
       - name: Build and pack
         shell: bash
         run: |
