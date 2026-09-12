@@ -145,7 +145,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			}
 			const mistralStream = await requestMistralStream(model, payload, apiKey, options);
 			stream.push({ type: "start", partial: output });
-			await consumeChatStream(model, output, stream, mistralStream);
+			await consumeChatStream(model, output, stream, mistralStream, options?.toolCallParsing);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -560,6 +560,7 @@ async function consumeChatStream(
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 	mistralStream: AsyncIterable<MistralCompletionEvent>,
+	toolCallParsing: StreamOptions["toolCallParsing"],
 ): Promise<void> {
 	let currentBlock: TextContent | ThinkingContent | null = null;
 	const blocks = output.content;
@@ -722,7 +723,9 @@ async function consumeChatStream(
 					? toolCall.function.arguments
 					: JSON.stringify(toolCall.function.arguments || {});
 			block.partialArgs = (block.partialArgs || "") + argsDelta;
-			block.arguments = parseStreamingJson<Record<string, unknown>>(block.partialArgs);
+			if (toolCallParsing !== "final") {
+				block.arguments = parseStreamingJson<Record<string, unknown>>(block.partialArgs);
+			}
 			stream.push({
 				type: "toolcall_delta",
 				contentIndex: toolBlocksByKey.get(key)!,

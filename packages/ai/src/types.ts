@@ -193,6 +193,13 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	samplingParams?: Record<string, unknown>;
 	maxTokens?: number;
 	/**
+	 * Controls when streamed tool-call arguments are parsed.
+	 * `"partial"` (default) provides best-effort parsed arguments on each delta;
+	 * `"final"` only promises parsed arguments when the tool call terminates.
+	 * Raw argument deltas are unchanged in either mode.
+	 */
+	toolCallParsing?: "partial" | "final";
+	/**
 	 * Preferred transport for providers that support multiple transports.
 	 * Providers that do not support this option ignore it.
 	 */

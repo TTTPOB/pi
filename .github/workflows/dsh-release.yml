@@ -1,0 +1,116 @@
+name: Release DSH Pi AI package
+
+on:
+  workflow_run:
+    workflows: [DSH Pi AI CI]
+    types: [completed]
+    branches: [feat/final-tool-arguments]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PATCH_REVISION: 1
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Determine release identity
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_version=$(node -p 'require("./packages/ai/package.json").version')
+          package_version="${upstream_version}-dsh.${PATCH_REVISION}"
+          tag="pi-ai-v${package_version}"
+          asset="earendil-works-pi-ai-${package_version}.tgz"
+          echo "upstream_version=${upstream_version}" >> "$GITHUB_OUTPUT"
+          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::GitHub Release ${tag} is already published. Refusing to mutate an immutable release."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Restore upstream model data
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir=$(mktemp -d)
+          trap 'rm -rf "$package_dir"' EXIT
+          npm pack "@earendil-works/pi-ai@${{ steps.version.outputs.upstream_version }}" --ignore-scripts --pack-destination "$package_dir" >/dev/null
+          mkdir "$package_dir/unpacked"
+          tar -xzf "$package_dir"/*.tgz -C "$package_dir/unpacked"
+          mkdir -p packages/ai/src/providers/data
+          cp -r "$package_dir/unpacked/package/dist/providers/data/." packages/ai/src/providers/data/
+
+      - name: Build Pi telemetry
+        run: npm run build --workspace=@earendil-works/pi-telemetry
+
+      - name: Build and pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pkg set version="${{ steps.version.outputs.package_version }}" --workspace=@earendil-works/pi-ai
+          npm run build:offline --workspace=@earendil-works/pi-ai
+          npm pack --ignore-scripts --workspace=@earendil-works/pi-ai --pack-destination "$RUNNER_TEMP"
+
+          asset="$RUNNER_TEMP/${{ steps.version.outputs.asset }}"
+          test -f "$asset"
+          tar -xOf "$asset" package/package.json | node -e '
+            let input = "";
+            process.stdin.on("data", (chunk) => input += chunk);
+            process.stdin.on("end", () => {
+              const pkg = JSON.parse(input);
+              const expectedName = "@earendil-works/pi-ai";
+              const expectedVersion = process.env.EXPECTED_VERSION;
+              if (pkg.name !== expectedName || pkg.version !== expectedVersion) {
+                throw new Error(`Expected ${expectedName}@${expectedVersion}, got ${pkg.name}@${pkg.version}`);
+              }
+            });
+          '
+          cd "$RUNNER_TEMP"
+          sha256sum "${{ steps.version.outputs.asset }}" > "${{ steps.version.outputs.asset }}.sha256"
+          sha256sum -c "${{ steps.version.outputs.asset }}.sha256"
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.package_version }}
+
+      - name: Publish immutable GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "$RUNNER_TEMP/${{ steps.version.outputs.asset }}" \
+            "$RUNNER_TEMP/${{ steps.version.outputs.asset }}.sha256" \
+            --target "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing for DeepSeek Harness."
+        env:
+          GH_TOKEN: ${{ github.token }}

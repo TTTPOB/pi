@@ -658,6 +658,7 @@ async function processStream(
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
 	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal), output), output, stream, model, {
+		toolCallParsing: options?.toolCallParsing,
 		serviceTier: options?.serviceTier,
 		grammarToolInputProperties,
 		resolveServiceTier: resolveCodexServiceTier,
@@ -1515,6 +1516,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
+				toolCallParsing: options?.toolCallParsing,
 				serviceTier: options?.serviceTier,
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,

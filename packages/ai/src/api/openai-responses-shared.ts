@@ -21,6 +21,7 @@ import type {
 	ImageContent,
 	Model,
 	StopReason,
+	StreamOptions,
 	TextContent,
 	TextSignatureV1,
 	ThinkingContent,
@@ -104,6 +105,7 @@ function convertToolResultOutput<TApi extends Api>(
 }
 
 export interface OpenAIResponsesStreamOptions {
+	toolCallParsing?: StreamOptions["toolCallParsing"];
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	resolveServiceTier?: (
@@ -654,14 +656,18 @@ export async function processResponsesStream<TApi extends Api>(
 			const slot = getSlot(event.output_index, "toolCall");
 			if (!slot || slot.block.partialJson === undefined) continue;
 			slot.block.partialJson += event.delta;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			if (options?.toolCallParsing !== "final") {
+				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			}
 			pushToolCallDelta(slot, event.delta);
 		} else if (event.type === "response.function_call_arguments.done") {
 			const slot = getSlot(event.output_index, "toolCall");
 			if (!slot || slot.block.partialJson === undefined) continue;
 			const previousPartialJson = slot.block.partialJson;
 			slot.block.partialJson = event.arguments;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			if (options?.toolCallParsing !== "final") {
+				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			}
 
 			if (event.arguments.startsWith(previousPartialJson)) {
 				const delta = event.arguments.slice(previousPartialJson.length);
@@ -711,7 +717,8 @@ export async function processResponsesStream<TApi extends Api>(
 				slot?.type === "toolCall" &&
 				slot.block.partialJson !== undefined
 			) {
-				slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
+				slot.block.partialJson = item.arguments || slot.block.partialJson || "";
+				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
 				// Finalize in-place and strip the scratch buffer so replay only
 				// carries parsed arguments.

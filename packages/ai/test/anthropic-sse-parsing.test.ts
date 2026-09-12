@@ -80,6 +80,103 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 	} as unknown as Anthropic;
 }
 
+type ToolCallObservation = {
+	rawDeltas: string[];
+	partialArguments: Array<Record<string, unknown>>;
+	toolCallEndArguments?: Record<string, unknown>;
+	resultArguments?: Record<string, unknown>;
+};
+
+function createToolCallResponse(): Response {
+	const usage = {
+		input_tokens: 1,
+		output_tokens: 2,
+		cache_read_input_tokens: 0,
+		cache_creation_input_tokens: 0,
+	};
+	return createSseResponse([
+		{
+			event: "message_start",
+			data: JSON.stringify({ type: "message_start", message: { id: "msg_tool", usage } }),
+		},
+		{
+			event: "content_block_start",
+			data: JSON.stringify({
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "toolu_read", name: "read", input: {} },
+			}),
+		},
+		{
+			event: "content_block_delta",
+			data: JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: '{"path":"a' },
+			}),
+		},
+		{
+			event: "content_block_delta",
+			data: JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: '.txt"}' },
+			}),
+		},
+		{
+			event: "content_block_stop",
+			data: JSON.stringify({ type: "content_block_stop", index: 0 }),
+		},
+		{
+			event: "message_delta",
+			data: JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage }),
+		},
+		{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+	]);
+}
+
+async function observeAnthropicToolCall(toolCallParsing?: "partial" | "final"): Promise<ToolCallObservation> {
+	const model = getModel("anthropic", "claude-haiku-4-5");
+	const context: Context = {
+		messages: [{ role: "user", content: "Use the read tool.", timestamp: Date.now() }],
+		tools: [
+			{
+				name: "read",
+				description: "Read a file.",
+				parameters: Type.Object({ path: Type.String() }),
+			},
+		],
+	};
+	const eventStream = streamAnthropic(model, context, {
+		client: createFakeAnthropicClient(createToolCallResponse()),
+		toolCallParsing,
+	});
+	const rawDeltas: string[] = [];
+	const partialArguments: Array<Record<string, unknown>> = [];
+	let toolCallEndArguments: Record<string, unknown> | undefined;
+
+	for await (const event of eventStream) {
+		if (event.type === "toolcall_delta") {
+			rawDeltas.push(event.delta);
+			const block = event.partial.content[event.contentIndex];
+			if (block?.type === "toolCall") {
+				partialArguments.push(structuredClone(block.arguments));
+			}
+		} else if (event.type === "toolcall_end") {
+			toolCallEndArguments = structuredClone(event.toolCall.arguments);
+		}
+	}
+
+	const result = await eventStream.result();
+	const resultToolCall = result.content.find((block): block is ToolCall => block.type === "toolCall");
+	return {
+		rawDeltas,
+		partialArguments,
+		toolCallEndArguments,
+		resultArguments: resultToolCall?.arguments,
+	};
+}
+
 describe("Anthropic raw SSE parsing", () => {
 	it("fails safely when Anthropic falls back after output begins", async () => {
 		const model = getModel("anthropic", "claude-opus-5");
@@ -240,6 +337,21 @@ describe("Anthropic raw SSE parsing", () => {
 			},
 		]);
 	});
+	it("keeps streamed argument chunks ordered and parses them at tool-call end", async () => {
+		const observation = await observeAnthropicToolCall("final");
+
+		expect(observation.rawDeltas).toEqual(['{"path":"a', '.txt"}']);
+		expect(observation.partialArguments).toEqual([{}, {}]);
+		expect(observation.toolCallEndArguments).toEqual({ path: "a.txt" });
+		expect(observation.resultArguments).toEqual({ path: "a.txt" });
+	});
+
+	it("updates partial tool arguments while the stream is in progress by default", async () => {
+		const observation = await observeAnthropicToolCall();
+
+		expect(observation.partialArguments).toEqual([{ path: "a" }, { path: "a.txt" }]);
+	});
+
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {

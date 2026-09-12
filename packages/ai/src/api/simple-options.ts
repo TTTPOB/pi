@@ -36,6 +36,7 @@ export function buildBaseOptions(
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,
 		fetch: options?.fetch,
+		toolCallParsing: options?.toolCallParsing,
 		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
 		sessionId: options?.sessionId,

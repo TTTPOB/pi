@@ -123,16 +123,27 @@ describe("pi-messages", () => {
 
 		const events: AssistantMessageEvent[] = [];
 		const partialStopReasons: StopReason[] = [];
+		const rawDeltas: string[] = [];
+		const partialArguments: Array<Record<string, unknown>> = [];
+		let toolCallEndArguments: Record<string, unknown> | undefined;
 		const eventStream = stream(model, context, {
 			apiKey: "test-key",
 			sessionId: "session-1",
 			toolChoice: "auto",
 			maxTokens: 100,
+			toolCallParsing: "final",
 			headers: { "x-custom": "1" },
 		});
 		for await (const event of eventStream) {
 			if ("partial" in event) {
 				partialStopReasons.push(event.partial.stopReason);
+			}
+			if (event.type === "toolcall_delta") {
+				rawDeltas.push(event.delta);
+				const block = event.partial.content[event.contentIndex];
+				if (block?.type === "toolCall") partialArguments.push(structuredClone(block.arguments));
+			} else if (event.type === "toolcall_end") {
+				toolCallEndArguments = structuredClone(event.toolCall.arguments);
 			}
 			events.push(event);
 		}
@@ -149,6 +160,9 @@ describe("pi-messages", () => {
 			{ type: "text", text: "Hello", textSignature: undefined },
 			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.txt" } },
 		]);
+		expect(rawDeltas).toEqual(['{"path":', '"a.txt"}']);
+		expect(partialArguments).toEqual([{}, {}]);
+		expect(toolCallEndArguments).toEqual({ path: "a.txt" });
 		expect(events.some((event) => event.type === "text_delta")).toBe(true);
 		expect(events.filter((event) => event.type === "toolcall_end")).toHaveLength(1);
 
@@ -162,6 +176,35 @@ describe("pi-messages", () => {
 			context,
 			options: { maxTokens: 100, sessionId: "session-1", toolChoice: "auto" },
 		});
+	});
+
+	it("keeps wire tool-call arguments when final mode receives no argument deltas", async () => {
+		const { baseUrl } = await startServer({
+			events: [
+				{ type: "start" },
+				{ type: "toolcall_start", contentIndex: 0, id: "call_1", toolName: "read" },
+				{
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.txt" } },
+				},
+				{ type: "done", reason: "toolUse", usage, responseId: "resp_wire_final" },
+			],
+		});
+		const model = createModel(baseUrl);
+		const eventStream = stream(model, context, { apiKey: "test-key", toolCallParsing: "final" });
+		const events: AssistantMessageEvent[] = [];
+
+		for await (const event of eventStream) events.push(event);
+
+		const toolCallEnd = events.find((event) => event.type === "toolcall_end");
+		expect(toolCallEnd?.type).toBe("toolcall_end");
+		if (toolCallEnd?.type === "toolcall_end") {
+			expect(toolCallEnd.toolCall.arguments).toEqual({ path: "a.txt" });
+		}
+		expect((await eventStream.result()).content).toEqual([
+			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.txt" } },
+		]);
 	});
 
 	it("appends debug=1 and reports response headers via onResponse", async () => {

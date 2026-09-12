@@ -643,7 +643,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							if (toolCall.function?.arguments) {
 								delta = toolCall.function.arguments;
 								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
-								block.arguments = parseStreamingJson(block.partialArgs);
+								if (options?.toolCallParsing !== "final") {
+									block.arguments = parseStreamingJson(block.partialArgs);
+								}
 							} else if (toolCall.custom?.input) {
 								const nextInput = getCustomToolCallInput(block) + toolCall.custom.input;
 								delta = appendCustomToolCallInput(block, nextInput, false) ?? "";

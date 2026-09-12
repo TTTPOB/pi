@@ -1,0 +1,61 @@
+name: DSH Pi AI CI
+
+on:
+  push:
+    branches: [feat/final-tool-arguments]
+  pull_request:
+    branches: [feat/final-tool-arguments]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-pi-ai-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Restore upstream model data
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./packages/ai/package.json").version')
+          package_dir=$(mktemp -d)
+          trap 'rm -rf "$package_dir"' EXIT
+          npm pack "@earendil-works/pi-ai@${version}" --ignore-scripts --pack-destination "$package_dir" >/dev/null
+          mkdir "$package_dir/unpacked"
+          tar -xzf "$package_dir"/*.tgz -C "$package_dir/unpacked"
+          mkdir -p packages/ai/src/providers/data
+          cp -r "$package_dir/unpacked/package/dist/providers/data/." packages/ai/src/providers/data/
+
+      - name: Check formatting and lint
+        run: npx biome check packages/ai
+
+      - name: Build Pi telemetry
+        run: npm run build --workspace=@earendil-works/pi-telemetry
+
+      - name: Build Pi AI
+        run: npm run build:offline --workspace=@earendil-works/pi-ai
+
+      - name: Test Pi AI
+        run: npm test --workspace=@earendil-works/pi-ai

@@ -574,7 +574,17 @@ context.messages.push({
 
 ### Streaming Tool Calls with Partial JSON
 
-During streaming, tool call arguments are progressively parsed as they arrive. This enables real-time UI updates before the complete arguments are available:
+By default, tool call arguments are progressively parsed as they arrive. This enables real-time UI updates before the complete arguments are available. Use the common `toolCallParsing` stream option to choose when parsed arguments are exposed:
+
+```typescript
+const s = models.stream(model, context, { toolCallParsing: 'final' });
+```
+
+- `'partial'` (default): `toolCall.arguments` is a best-effort parse updated for each `toolcall_delta`.
+- `'final'`: parsed arguments are only promised when the tool call terminates, in `toolcall_end`.
+- In both modes, `toolcall_delta.delta` contains the raw argument delta unchanged.
+
+With the default partial mode, tool call arguments are progressively parsed as they arrive:
 
 ```typescript
 const s = models.stream(model, context);
@@ -668,7 +678,7 @@ All streaming events emitted during assistant message generation:
 | `thinking_delta` | Thinking chunk received | `delta`: New text, `contentIndex`: Position |
 | `thinking_end` | Thinking block complete | `content`: Full thinking, `contentIndex`: Position |
 | `toolcall_start` | Tool call begins | `contentIndex`: Position in content array |
-| `toolcall_delta` | Tool arguments streaming | `delta`: JSON chunk, `partial.content[contentIndex].arguments`: Partial parsed args |
+| `toolcall_delta` | Tool arguments streaming | `delta`: Raw JSON chunk, `partial.content[contentIndex].arguments`: Best-effort parsed args in `'partial'` mode |
 | `toolcall_end` | Tool call complete | `toolCall`: Complete, but not schema-validated, tool call with `id`, `name`, `arguments` |
 | `done` | Stream complete | `reason`: Stop reason ("stop", "length", "toolUse"), `message`: Final assistant message |
 | `error` | Error occurred | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |

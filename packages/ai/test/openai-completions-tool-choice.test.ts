@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { convertMessages } from "../src/api/openai-completions.ts";
+import { convertMessages, stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { getModel, stream, streamSimple } from "../src/compat.ts";
 import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
 
@@ -107,6 +107,89 @@ describe("openai-completions tool_choice", () => {
 	beforeEach(() => {
 		mockState.lastParams = undefined;
 		mockState.chunks = undefined;
+	});
+
+	it("keeps interleaved tool argument deltas ordered and parses each call at stream end", async () => {
+		mockState.chunks = [
+			{
+				id: "chatcmpl-tools",
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_read",
+									type: "function",
+									function: { name: "read", arguments: '{"path":"in' },
+								},
+								{
+									index: 1,
+									id: "call_write",
+									type: "function",
+									function: { name: "write", arguments: '{"path":"out' },
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			},
+			{
+				id: "chatcmpl-tools",
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{
+									index: 1,
+									function: { arguments: '.txt"}' },
+								},
+								{
+									index: 0,
+									function: { arguments: '.txt"}' },
+								},
+							],
+						},
+						finish_reason: null,
+					},
+				],
+			},
+			{
+				id: "chatcmpl-tools",
+				choices: [{ delta: {}, finish_reason: "tool_calls" }],
+			},
+		];
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions" } as const;
+		const context = {
+			messages: [{ role: "user" as const, content: "Read in.txt and write out.txt.", timestamp: Date.now() }],
+			tools: [
+				{ name: "read", description: "Read a file", parameters: Type.Object({ path: Type.String() }) },
+				{ name: "write", description: "Write a file", parameters: Type.Object({ path: Type.String() }) },
+			],
+		};
+		const eventStream = streamOpenAICompletions(model, context, { apiKey: "test", toolCallParsing: "final" });
+		const rawDeltas: string[] = [];
+		const endedArguments: Array<{ contentIndex: number; arguments: Record<string, unknown> }> = [];
+
+		for await (const event of eventStream) {
+			if (event.type === "toolcall_delta") {
+				rawDeltas.push(event.delta);
+			} else if (event.type === "toolcall_end") {
+				endedArguments.push({
+					contentIndex: event.contentIndex,
+					arguments: structuredClone(event.toolCall.arguments),
+				});
+			}
+		}
+
+		expect(rawDeltas).toEqual(['{"path":"in', '{"path":"out', '.txt"}', '.txt"}']);
+		expect(endedArguments).toEqual([
+			{ contentIndex: 0, arguments: { path: "in.txt" } },
+			{ contentIndex: 1, arguments: { path: "out.txt" } },
+		]);
+		expect((await eventStream.result()).stopReason).toBe("toolUse");
 	});
 
 	it("forwards toolChoice from simple options to payload", async () => {
