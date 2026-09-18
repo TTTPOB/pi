@@ -1,27 +1,25 @@
 name: Release DSH Pi AI package
 
 on:
-  workflow_run:
-    workflows: [DSH Pi AI CI]
-    types: [completed]
-    branches: [feat/final-tool-arguments]
+  push:
+    tags:
+      - 'pi-ai-v*-fork*'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  PATCH_REVISION: 2
+  FORK_SEQUENCE: 1
 
 jobs:
   release:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Node.js
@@ -36,8 +34,13 @@ jobs:
         run: |
           set -euo pipefail
           upstream_version=$(node -p 'require("./packages/ai/package.json").version')
-          package_version="${upstream_version}-dsh.${PATCH_REVISION}"
+          package_version="${upstream_version}-fork${FORK_SEQUENCE}"
           tag="pi-ai-v${package_version}"
+          if [[ "$GITHUB_REF_TYPE" = tag ]]; then
+            test "$GITHUB_REF_NAME" = "$tag"
+          else
+            test "$GITHUB_REF" = refs/heads/feat/final-tool-arguments
+          fi
           asset="earendil-works-pi-ai-${package_version}.tgz"
           echo "upstream_version=${upstream_version}" >> "$GITHUB_OUTPUT"
           echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
@@ -109,7 +112,7 @@ jobs:
           gh release create "${{ steps.version.outputs.tag }}" \
             "$RUNNER_TEMP/${{ steps.version.outputs.asset }}" \
             "$RUNNER_TEMP/${{ steps.version.outputs.asset }}.sha256" \
-            --target "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing and Responses instructions system prompts for DeepSeek Harness."
         env:
