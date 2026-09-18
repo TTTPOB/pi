@@ -9,6 +9,8 @@ type CapturedHeaders = Headers | string[][] | Record<string, string | readonly s
 interface CapturedResponsesPayload {
 	prompt_cache_key?: string;
 	session_id?: string;
+	instructions?: string;
+	input?: unknown[];
 	tools?: Array<{ name?: string; strict?: boolean }>;
 }
 
@@ -70,6 +72,38 @@ async function captureOpenAIResponseHeaders(
 describe("openai-responses provider defaults", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("sends the system prompt through instructions when configured", async () => {
+		let capturedPayload: CapturedResponsesPayload | undefined;
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\n\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+		const base = getModel("openai", "gpt-5.4");
+		const model = { ...base, compat: { ...base.compat, systemPromptFormat: "instructions" as const } };
+		const stream = streamOpenAIResponses(
+			model,
+			{
+				systemPrompt: "Use the requested format.",
+				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test-key",
+				onPayload: (payload) => {
+					capturedPayload = payload as CapturedResponsesPayload;
+				},
+			},
+		);
+
+		for await (const event of stream) {
+			if (event.type === "done" || event.type === "error") break;
+		}
+
+		expect(capturedPayload?.instructions).toBe("Use the requested format.");
+		expect(capturedPayload?.input).not.toContainEqual(expect.objectContaining({ role: "system" }));
 	});
 
 	it("omits reasoning when no reasoning is requested", async () => {
