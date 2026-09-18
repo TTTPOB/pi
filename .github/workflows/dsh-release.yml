@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 env:
-  PATCH_REVISION: 1
+  PATCH_REVISION: 2
 
 jobs:
   release:
@@ -111,6 +111,6 @@ jobs:
             "$RUNNER_TEMP/${{ steps.version.outputs.asset }}.sha256" \
             --target "${{ github.event.workflow_run.head_sha || github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
-            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing for DeepSeek Harness."
+            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing and Responses instructions system prompts for DeepSeek Harness."
         env:
           GH_TOKEN: ${{ github.token }}
