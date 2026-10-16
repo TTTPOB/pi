@@ -502,11 +502,11 @@ describe("openai-responses provider defaults", () => {
 		expect(captured.clientRequestId).toBe("override-request");
 	});
 
-	it("omits OpenAI cache-affinity headers when cacheRetention is none", async () => {
+	it("preserves OpenAI session headers when cacheRetention is none", async () => {
 		const captured = await captureOpenAIResponseHeaders({ cacheRetention: "none", sessionId: "session-123" });
 
-		expect(captured.sessionId).toBeNull();
-		expect(captured.clientRequestId).toBeNull();
+		expect(captured.sessionId).toBe("session-123");
+		expect(captured.clientRequestId).toBe("session-123");
 	});
 
 	it.each([

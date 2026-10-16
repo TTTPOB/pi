@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  FORK_SEQUENCE: 1
+  FORK_SEQUENCE: 2
 
 jobs:
   release:
@@ -77,6 +77,10 @@ jobs:
       - name: Build Pi telemetry
         run: npm run build --workspace=@earendil-works/pi-telemetry
 
+      - name: Test Responses compatibility and session identity
+        working-directory: packages/ai
+        run: node ../../node_modules/vitest/dist/cli.js --run test/openai-responses-compat.test.ts test/openai-responses-session-identity.test.ts
+
       - name: Build and pack
         shell: bash
         run: |
@@ -105,6 +109,18 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ steps.version.outputs.package_version }}
 
+      - name: Smoke packed session identity outside the source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer=$(mktemp -d)
+          trap 'rm -rf "$consumer"' EXIT
+          cp scripts/smoke-dsh-pi-ai.mjs "$consumer/smoke.mjs"
+          cd "$consumer"
+          npm init -y >/dev/null
+          npm install --ignore-scripts "$RUNNER_TEMP/${{ steps.version.outputs.asset }}"
+          node smoke.mjs
+
       - name: Publish immutable GitHub Release
         shell: bash
         run: |
@@ -114,6 +130,6 @@ jobs:
             "$RUNNER_TEMP/${{ steps.version.outputs.asset }}.sha256" \
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
-            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing and Responses instructions system prompts for DeepSeek Harness."
+            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Adds final-only tool argument parsing, Responses instructions system prompts, and cache-independent session identity headers for DeepSeek Harness."
         env:
           GH_TOKEN: ${{ github.token }}
