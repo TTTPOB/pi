@@ -1,0 +1,122 @@
+name: Release DSH Pi AI package
+
+on:
+  push:
+    tags: ['pi-ai-v*-fork*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dsh-pi-ai-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  PI_NO_LOCAL_LLM: '1'
+  AWS_EC2_METADATA_DISABLED: 'true'
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Determine immutable release identity
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./packages/ai/package.json").version')
+          tag="pi-ai-v$version"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "$tag"
+          test "$(git rev-parse "refs/tags/$tag^{commit}")" = "$GITHUB_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists; refusing to overwrite"
+            exit 1
+          fi
+          echo "package_version=$version" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${version%-fork*}" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=earendil-works-pi-ai-$version.tgz" >> "$GITHUB_OUTPUT"
+      - name: Install selected workspaces without rewriting the monorepo lock
+        run: npm install --ignore-scripts --package-lock=false --workspace packages/ai --workspace packages/telemetry --include-workspace-root
+      - name: Restore pinned upstream model data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/upstream"
+          npm pack "@earendil-works/pi-ai@${{ steps.version.outputs.upstream_version }}" --ignore-scripts --pack-destination "$RUNNER_TEMP/upstream" >/dev/null
+          tar -xzf "$RUNNER_TEMP/upstream"/*.tgz -C "$RUNNER_TEMP/upstream"
+          mkdir -p packages/ai/src/providers/data
+          cp -r "$RUNNER_TEMP/upstream/package/dist/providers/data/." packages/ai/src/providers/data/
+          npm run check:model-data --workspace packages/ai
+      - name: Build and test fork behavior
+        run: |
+          npm run build --workspace packages/telemetry
+          npm run build:offline --workspace packages/ai
+          cd packages/ai
+          node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts
+      - name: Pack and verify artifact identity
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.package_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --workspace packages/ai --pack-destination "$RUNNER_TEMP"
+          asset="$RUNNER_TEMP/${{ steps.version.outputs.asset }}"
+          tar -xOf "$asset" package/package.json | node --input-type=module -e '
+            import assert from "node:assert/strict";
+            let input = "";
+            for await (const chunk of process.stdin) input += chunk;
+            const pkg = JSON.parse(input);
+            assert.equal(pkg.name, "@earendil-works/pi-ai");
+            assert.equal(pkg.version, process.env.EXPECTED_VERSION);
+          '
+          cd "$RUNNER_TEMP"
+          sha256sum "${{ steps.version.outputs.asset }}" > "${{ steps.version.outputs.asset }}.sha256"
+          sha256sum -c "${{ steps.version.outputs.asset }}.sha256"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+          dest: ${{ runner.temp }}/setup-pnpm
+      - name: Smoke packed fork in an isolated DSH consumer
+        env:
+          FORK_ASSET: ${{ runner.temp }}/${{ steps.version.outputs.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir "$consumer"
+          cp packages/ai/scripts/smoke-dsh-fork.mjs "$consumer/smoke.mjs"
+          cd "$consumer"
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const source = "file:" + process.env.FORK_ASSET;
+            writeFileSync("package.json", JSON.stringify({ private: true, type: "module", dependencies: { "@earendil-works/pi-ai": source, "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.1" } }));
+            writeFileSync("pnpm-workspace.yaml", JSON.stringify({ overrides: { "@earendil-works/pi-ai": source }, allowBuilds: {} }));
+          '
+          pnpm install --ignore-scripts
+          node smoke.mjs patched
+      - name: Publish immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "$RUNNER_TEMP/${{ steps.version.outputs.asset }}" \
+            "$RUNNER_TEMP/${{ steps.version.outputs.asset }}.sha256" \
+            --verify-tag --title "${{ steps.version.outputs.tag }}" --latest=false \
+            --notes "Patched from @earendil-works/pi-ai v${{ steps.version.outputs.upstream_version }}. Final-only tool arguments, Responses instructions and cache-independent session identity. Built and consumer-qualified by GitHub Actions from $GITHUB_SHA."

@@ -20,7 +20,7 @@ Pi 1.1.0 尚未包含上述三项等价行为。旧 fork `1fe0048d4` 中的旧�
 
 ```sh
 export NODE_OPTIONS=--max-old-space-size=3072
-npm ci --ignore-scripts --workspace packages/ai --workspace packages/telemetry --include-workspace-root
+npm install --ignore-scripts --package-lock=false --workspace packages/ai --workspace packages/telemetry --include-workspace-root
 npm run build --workspace packages/telemetry
 npm run check:model-data --workspace packages/ai
 npm run build:offline --workspace packages/ai
@@ -33,4 +33,8 @@ Pi 将模型 JSON 数据作为忽略的生成文件。为保持 v1.1.0 模型目
 
 最终 tarball 在另一个空目录中通过消费者的 `pnpm-workspace.yaml` override 安装。override 必须覆盖所有 `@earendil-works/pi-ai` 传递依赖；只添加直接依赖不能保证替换 DSH 的 `^1.1.0`，因为该范围不接受 fork prerelease。将 `scripts/smoke-dsh-fork.mjs` 复制到消费者目录后运行 `node smoke-dsh-fork.mjs patched`，核对实际解析的 fork 版本、JSON delta 保持原样、最终参数正确、Responses instructions 不重复发送、无 cache 时 session identity 仍存在。对官方 1.1.0 消费者运行同一脚本的 `official` 模式，可复现相反的基准行为。无需连接真实 provider。
 
-本次保持 monorepo 根 lockfile 不变：npm 对 fork prerelease 重新解析会把其他 Pi workspace 的依赖升级到额外官方版本，超出本 fork 的单包交付范围。以独立 tarball 消费者安装验证为交付依据。
+本次保持 monorepo 根 lockfile 不变：npm 对 fork prerelease 重新解析会把其他 Pi workspace 的依赖升级到额外官方版本，超出本 fork 的单包交付范围。旧 lockfile 不适用于 fork manifest 的 `npm ci`，因此选定 workspace 的安装显式使用 `--package-lock=false`。以独立 tarball 消费者安装验证为交付依据。
+
+## GitHub Release
+
+推送 `upgrade/pi-ai-1.1.0-fork` 运行 `.github/workflows/dsh-ci.yml`。发布时将新的 `pi-ai-v<package.version>` tag 推送到个人 fork；`.github/workflows/dsh-release.yml` 从 tag 构建、校验模型数据、执行 fork 行为测试，并在独立 DSH 消费者中验证 tarball，随后发布 tarball 及其 `.sha256`。manifest 已包含 fork 版本，workflow 不再次追加后缀；已有 Release 拒绝覆盖。不发布 npm，不要求合并默认分支。

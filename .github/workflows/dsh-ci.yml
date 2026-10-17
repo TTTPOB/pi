@@ -1,0 +1,49 @@
+name: DSH Pi AI CI
+
+on:
+  push:
+    branches: [upgrade/pi-ai-1.1.0-fork]
+  pull_request:
+    branches: [upgrade/pi-ai-1.1.0-fork]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-pi-ai-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  PI_NO_LOCAL_LLM: '1'
+  AWS_EC2_METADATA_DISABLED: 'true'
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install selected workspaces without rewriting the monorepo lock
+        run: npm install --ignore-scripts --package-lock=false --workspace packages/ai --workspace packages/telemetry --include-workspace-root
+      - name: Restore pinned upstream model data
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./packages/ai/package.json").version.split("-fork")[0]')
+          mkdir "$RUNNER_TEMP/upstream"
+          npm pack "@earendil-works/pi-ai@$version" --ignore-scripts --pack-destination "$RUNNER_TEMP/upstream" >/dev/null
+          tar -xzf "$RUNNER_TEMP/upstream"/*.tgz -C "$RUNNER_TEMP/upstream"
+          mkdir -p packages/ai/src/providers/data
+          cp -r "$RUNNER_TEMP/upstream/package/dist/providers/data/." packages/ai/src/providers/data/
+          npm run check:model-data --workspace packages/ai
+      - name: Build telemetry and Pi AI offline
+        run: |
+          npm run build --workspace packages/telemetry
+          npm run build:offline --workspace packages/ai
+      - name: Test fork behavior without provider credentials
+        working-directory: packages/ai
+        run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts
