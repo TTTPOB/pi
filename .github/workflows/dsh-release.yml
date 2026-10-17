@@ -85,7 +85,6 @@ jobs:
           '
           cd "$RUNNER_TEMP"
           sha256sum "${{ steps.version.outputs.asset }}" > "${{ steps.version.outputs.asset }}.sha256"
-          sha256sum -c "${{ steps.version.outputs.asset }}.sha256"
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.5
