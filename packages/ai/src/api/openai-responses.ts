@@ -21,7 +21,14 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
-import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
+import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { getSystemMessageText } from "../utils/text.ts";
+import {
+	getDeclaredTools,
+	getInitialSystemMessage,
+	resolveTranscript,
+	resolveTranscriptTools,
+} from "../utils/transcript.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
@@ -82,6 +89,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
+		systemPromptFormat: model.compat?.systemPromptFormat ?? "input",
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
@@ -155,8 +163,6 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
-			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
-			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
 				getDeclaredTools(normalizedContext.messages),
@@ -168,7 +174,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				apiKey,
 				options?.headers,
 				options?.fetch,
-				cacheSessionId,
+				options?.sessionId,
 			);
 			let params = buildParams(model, normalizedContext, options, compat, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model);
@@ -314,6 +320,7 @@ function buildParams(
 		compat.supportsAdditionalTools || compat.supportsToolSearch,
 	);
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+		includeSystemPrompt: compat.systemPromptFormat === "input",
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
 		supportsAdditionalTools: compat.supportsAdditionalTools,
@@ -336,6 +343,12 @@ function buildParams(
 		prompt_cache_options: omitUnsupportedFields ? undefined : getPromptCacheOptions(compat, cacheRetention),
 		store: false,
 	};
+
+	const initialSystemMessage = getInitialSystemMessage(context.messages);
+	if (compat.systemPromptFormat === "instructions" && initialSystemMessage) {
+		const instructions = getSystemMessageText(initialSystemMessage);
+		if (instructions) params.instructions = sanitizeSurrogates(instructions);
+	}
 
 	if (options?.maxTokens && compat.supportsMaxOutputTokens && !omitUnsupportedFields) {
 		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
