@@ -37,4 +37,8 @@ Pi 将模型 JSON 数据作为忽略的生成文件。为保持 v1.1.0 模型目
 
 ## GitHub Release
 
-推送 `upgrade/pi-ai-1.1.0-fork` 运行 `.github/workflows/dsh-ci.yml`。发布时将新的 `pi-ai-v<package.version>` tag 推送到个人 fork；`.github/workflows/dsh-release.yml` 从 tag 构建、校验模型数据、执行 fork 行为测试，并在独立 DSH 消费者中验证 tarball，随后发布 tarball 及其 `.sha256`。manifest 已包含 fork 版本，workflow 不再次追加后缀；已有 Release 拒绝覆盖。不发布 npm，不要求合并默认分支。
+- 长期发布分支为 `feat/final-tool-arguments`，位于 TTTPOB remote `fork`（github.com/TTTPOB/pi）；本地分支跟踪 `fork/feat/final-tool-arguments`，不跟踪第三方上游 `origin`。
+- 开发与测试使用独立分支或 worktree。
+- 发布前合并到长期分支并 push，等待 `DSH Pi AI CI`（`.github/workflows/dsh-ci.yml`）通过。
+- 仅从长期分支上的提交，通过 GitHub Actions `Release DSH Pi AI package`（`.github/workflows/dsh-release.yml`）发布 `pi-ai-v<package.version>`；tag 和 Release 资产不可变，不上传本地构建，不发布 npm。
+- 本机约 13 GB 内存，本地仅执行上述 Pi AI scoped 检查；重型 monorepo 检查交给 CI。
