@@ -2,9 +2,9 @@ name: DSH Pi AI CI
 
 on:
   push:
-    branches: [feat/final-tool-arguments, upgrade/pi-ai-1.1.0-fork]
+    branches: [daily-driver]
   pull_request:
-    branches: [feat/final-tool-arguments, upgrade/pi-ai-1.1.0-fork]
+    branches: [daily-driver]
   workflow_dispatch:
 
 permissions:
