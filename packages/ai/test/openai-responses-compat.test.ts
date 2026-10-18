@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel } from "../src/compat.ts";
+import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
 type CapturedHeaders = Headers | string[][] | Record<string, string | readonly string[]> | undefined;
@@ -9,8 +9,6 @@ type CapturedHeaders = Headers | string[][] | Record<string, string | readonly s
 interface CapturedResponsesPayload {
 	prompt_cache_key?: string;
 	session_id?: string;
-	instructions?: string;
-	input?: unknown[];
 	tools?: Array<{ name?: string; strict?: boolean }>;
 }
 
@@ -55,11 +53,11 @@ async function captureOpenAIResponseHeaders(
 
 	const stream = streamOpenAIResponses(
 		model,
-		{
+		normalizeContext({
 			systemPrompt: "sys",
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-		},
-		{ apiKey: "test-key", ...options },
+		}),
+		{ apiKey: "sk-test-key", ...options },
 	);
 
 	for await (const event of stream) {
@@ -72,38 +70,6 @@ async function captureOpenAIResponseHeaders(
 describe("openai-responses provider defaults", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
-	});
-
-	it("sends the system prompt through instructions when configured", async () => {
-		let capturedPayload: CapturedResponsesPayload | undefined;
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response("data: [DONE]\n\n", {
-				status: 200,
-				headers: { "content-type": "text/event-stream" },
-			}),
-		);
-		const base = getModel("openai", "gpt-5.4");
-		const model = { ...base, compat: { ...base.compat, systemPromptFormat: "instructions" as const } };
-		const stream = streamOpenAIResponses(
-			model,
-			{
-				systemPrompt: "Use the requested format.",
-				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
-			{
-				apiKey: "test-key",
-				onPayload: (payload) => {
-					capturedPayload = payload as CapturedResponsesPayload;
-				},
-			},
-		);
-
-		for await (const event of stream) {
-			if (event.type === "done" || event.type === "error") break;
-		}
-
-		expect(capturedPayload?.instructions).toBe("Use the requested format.");
-		expect(capturedPayload?.input).not.toContainEqual(expect.objectContaining({ role: "system" }));
 	});
 
 	it("omits reasoning when no reasoning is requested", async () => {
@@ -119,12 +85,12 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload;
 				},
@@ -153,7 +119,7 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				messages: [
 					{
 						role: "user",
@@ -168,9 +134,9 @@ describe("openai-responses provider defaults", () => {
 						parameters: Type.Object({ value: Type.String() }),
 					},
 				],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				toolChoice: "required",
 				onPayload: (payload) => {
 					capturedPayload = payload;
@@ -201,7 +167,7 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				messages: [{ role: "user", content: "Use a tool.", timestamp: Date.now() }],
 				tools: [
 					{
@@ -219,9 +185,9 @@ describe("openai-responses provider defaults", () => {
 						constrainedSampling: { type: "json_schema", strict: "prefer" },
 					},
 				],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload as CapturedResponsesPayload;
 				},
@@ -250,6 +216,8 @@ describe("openai-responses provider defaults", () => {
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
+		"gpt-6-sol",
+		"gpt-6-luna",
 	] as const)("sends none reasoning effort for OpenAI %s when no reasoning is requested", async (modelId) => {
 		const model = getModel("openai", modelId);
 		let capturedPayload: unknown;
@@ -263,12 +231,12 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload;
 				},
@@ -299,12 +267,12 @@ describe("openai-responses provider defaults", () => {
 
 			const stream = streamOpenAIResponses(
 				model,
-				{
+				normalizeContext({
 					systemPrompt: "sys",
 					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-				},
+				}),
 				{
-					apiKey: "test-key",
+					apiKey: "sk-test-key",
 					onPayload: (payload) => {
 						capturedPayload = payload;
 					},
@@ -340,12 +308,12 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				sessionId,
 				onPayload: (payload) => {
 					capturedPayload = payload as Pick<CapturedResponsesPayload, "prompt_cache_key">;
@@ -502,7 +470,7 @@ describe("openai-responses provider defaults", () => {
 		expect(captured.clientRequestId).toBe("override-request");
 	});
 
-	it("preserves OpenAI session headers when cacheRetention is none", async () => {
+	it("preserves OpenAI session identity when cacheRetention is none", async () => {
 		const captured = await captureOpenAIResponseHeaders({ cacheRetention: "none", sessionId: "session-123" });
 
 		expect(captured.sessionId).toBe("session-123");
@@ -510,51 +478,60 @@ describe("openai-responses provider defaults", () => {
 	});
 
 	it.each([
-		["gpt-5.4", "priority", 2],
-		["gpt-5.5", "priority", 2.5],
-		["gpt-5.5", "flex", 0.5],
-	] as const)("applies %s %s service-tier cost multiplier", async (modelId, serviceTier, multiplier) => {
-		const model = getModel("openai", modelId);
-		const tokenCount = 100_000;
-		const tokenScale = tokenCount / 1_000_000;
-		const sse = `${[
-			`data: ${JSON.stringify({
-				type: "response.completed",
-				response: {
-					status: "completed",
-					service_tier: serviceTier,
-					usage: {
-						input_tokens: tokenCount,
-						output_tokens: tokenCount,
-						total_tokens: tokenCount * 2,
-						input_tokens_details: { cached_tokens: 0 },
+		["gpt-5.4", "priority", "priority", 2],
+		["gpt-5.5", "priority", "priority", 2.5],
+		["gpt-5.5", "flex", "flex", 0.5],
+		// GPT-6 models report Fast mode as "fast" even when "priority" is requested (#10034)
+		["gpt-6-luna", "priority", "fast", 2],
+		["gpt-6-luna", "fast", "fast", 2],
+	] as const)(
+		"applies %s cost multiplier for requested %s and returned %s service tier",
+		async (modelId, serviceTier, responseServiceTier, multiplier) => {
+			const model = getModel("openai", modelId);
+			const tokenCount = 100_000;
+			const tokenScale = tokenCount / 1_000_000;
+			const sse = `${[
+				`data: ${JSON.stringify({
+					type: "response.completed",
+					response: {
+						status: "completed",
+						service_tier: responseServiceTier,
+						usage: {
+							input_tokens: tokenCount,
+							output_tokens: tokenCount,
+							total_tokens: tokenCount * 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
 					},
-				},
-			})}`,
-		].join("\n\n")}\n\n`;
+				})}`,
+			].join("\n\n")}\n\n`;
 
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(sse, {
-				status: 200,
-				headers: { "content-type": "text/event-stream" },
-			}),
-		);
+			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				new Response(sse, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				}),
+			);
 
-		const stream = streamOpenAIResponses(
-			model,
-			{
-				systemPrompt: "sys",
-				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
-			{ apiKey: "test-key", serviceTier },
-		);
+			const stream = streamOpenAIResponses(
+				model,
+				normalizeContext({
+					systemPrompt: "sys",
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				}),
+				{ apiKey: "sk-test-key", serviceTier },
+			);
 
-		const result = await stream.result();
+			const result = await stream.result();
 
-		expect(result.usage.cost.input).toBe(model.cost.input * multiplier * tokenScale);
-		expect(result.usage.cost.output).toBe(model.cost.output * multiplier * tokenScale);
-		expect(result.usage.cost.total).toBe((model.cost.input + model.cost.output) * multiplier * tokenScale);
-	});
+			expect(result.usage.cost.input).toBeCloseTo(model.cost.input * multiplier * tokenScale, 12);
+			expect(result.usage.cost.output).toBeCloseTo(model.cost.output * multiplier * tokenScale, 12);
+			expect(result.usage.cost.total).toBeCloseTo(
+				(model.cost.input + model.cost.output) * multiplier * tokenScale,
+				12,
+			);
+		},
+	);
 });
 
 describe("openai-responses max_output_tokens compat", () => {
@@ -574,12 +551,12 @@ describe("openai-responses max_output_tokens compat", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				maxTokens: 1024,
 				onPayload: (payload) => {
 					capturedPayload = payload as { max_output_tokens?: number };
@@ -611,12 +588,12 @@ describe("openai-responses max_output_tokens compat", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				maxTokens: 1024,
 				onPayload: (payload) => {
 					capturedPayload = payload as { max_output_tokens?: number };

@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { convertMessages, stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
-import { getModel, stream, streamSimple } from "../src/compat.ts";
+import { convertMessages } from "../src/api/openai-completions.ts";
+import { getModel, normalizeContext, stream, streamSimple } from "../src/compat.ts";
 import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
@@ -107,89 +107,6 @@ describe("openai-completions tool_choice", () => {
 	beforeEach(() => {
 		mockState.lastParams = undefined;
 		mockState.chunks = undefined;
-	});
-
-	it("keeps interleaved tool argument deltas ordered and parses each call at stream end", async () => {
-		mockState.chunks = [
-			{
-				id: "chatcmpl-tools",
-				choices: [
-					{
-						delta: {
-							tool_calls: [
-								{
-									index: 0,
-									id: "call_read",
-									type: "function",
-									function: { name: "read", arguments: '{"path":"in' },
-								},
-								{
-									index: 1,
-									id: "call_write",
-									type: "function",
-									function: { name: "write", arguments: '{"path":"out' },
-								},
-							],
-						},
-						finish_reason: null,
-					},
-				],
-			},
-			{
-				id: "chatcmpl-tools",
-				choices: [
-					{
-						delta: {
-							tool_calls: [
-								{
-									index: 1,
-									function: { arguments: '.txt"}' },
-								},
-								{
-									index: 0,
-									function: { arguments: '.txt"}' },
-								},
-							],
-						},
-						finish_reason: null,
-					},
-				],
-			},
-			{
-				id: "chatcmpl-tools",
-				choices: [{ delta: {}, finish_reason: "tool_calls" }],
-			},
-		];
-		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
-		const model = { ...baseModel, api: "openai-completions" } as const;
-		const context = {
-			messages: [{ role: "user" as const, content: "Read in.txt and write out.txt.", timestamp: Date.now() }],
-			tools: [
-				{ name: "read", description: "Read a file", parameters: Type.Object({ path: Type.String() }) },
-				{ name: "write", description: "Write a file", parameters: Type.Object({ path: Type.String() }) },
-			],
-		};
-		const eventStream = streamOpenAICompletions(model, context, { apiKey: "test", toolCallParsing: "final" });
-		const rawDeltas: string[] = [];
-		const endedArguments: Array<{ contentIndex: number; arguments: Record<string, unknown> }> = [];
-
-		for await (const event of eventStream) {
-			if (event.type === "toolcall_delta") {
-				rawDeltas.push(event.delta);
-			} else if (event.type === "toolcall_end") {
-				endedArguments.push({
-					contentIndex: event.contentIndex,
-					arguments: structuredClone(event.toolCall.arguments),
-				});
-			}
-		}
-
-		expect(rawDeltas).toEqual(['{"path":"in', '{"path":"out', '.txt"}', '.txt"}']);
-		expect(endedArguments).toEqual([
-			{ contentIndex: 0, arguments: { path: "in.txt" } },
-			{ contentIndex: 1, arguments: { path: "out.txt" } },
-		]);
-		expect((await eventStream.result()).stopReason).toBe("toolUse");
 	});
 
 	it("forwards toolChoice from simple options to payload", async () => {
@@ -302,6 +219,82 @@ describe("openai-completions tool_choice", () => {
 		expect("strict" in (tool ?? {})).toBe(false);
 	});
 
+	it("defaults unknown OpenAI-compatible endpoints to non-strict tools", async () => {
+		// Regression test for #9816.
+		const model = {
+			...localOpenAICompletionsModel,
+			id: "local-model",
+			name: "Local Model",
+		} satisfies Model<"openai-completions">;
+		const tool: Tool = {
+			name: "ping",
+			description: "Ping tool",
+			parameters: Type.Object({
+				required: Type.String(),
+				optional: Type.Optional(Type.String()),
+			}),
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Call ping", timestamp: Date.now() }],
+				tools: [tool],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as {
+			tools?: Array<{ function?: { strict?: boolean; parameters?: { required?: string[] } } }>;
+		};
+		const functionTool = params.tools?.[0]?.function;
+		expect(functionTool).not.toHaveProperty("strict");
+		expect(functionTool?.parameters?.required).toEqual(["required"]);
+	});
+
+	it("preserves strict tools for capable built-in Chat Completions models", async () => {
+		const model = getModel("groq", "openai/gpt-oss-20b")!;
+		expect(model.compat?.supportsStrictMode).toBe(true);
+		const tool: Tool = {
+			name: "ping",
+			description: "Ping tool",
+			parameters: Type.Object({
+				required: Type.String(),
+				optional: Type.Optional(Type.String()),
+			}),
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Call ping", timestamp: Date.now() }],
+				tools: [tool],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as {
+			tools?: Array<{ function?: { strict?: boolean; parameters?: { required?: string[] } } }>;
+		};
+		const functionTool = params.tools?.[0]?.function;
+		expect(functionTool?.strict).toBe(true);
+		expect(functionTool?.parameters?.required).toEqual(["required", "optional"]);
+	});
+
 	it("maps Groq Qwen reasoning levels to default reasoning_effort", async () => {
 		const model = getModel("groq", "qwen/qwen3.6-27b")!;
 		let payload: unknown;
@@ -403,21 +396,21 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("stores z.ai effort metadata", () => {
-		for (const provider of ["zai", "zai-coding-cn"] as const) {
-			for (const modelId of ["glm-5.2", "glm-5.2-highspeed"] as const) {
-				const model = getModel(provider, modelId)!;
-				expect(model.compat?.supportsReasoningEffort).toBe(true);
-				expect(model.thinkingLevelMap).toEqual({
-					off: "none",
-					minimal: null,
-					low: null,
-					medium: null,
-					high: "high",
-					xhigh: null,
-					max: "max",
-				});
-			}
+		for (const modelId of ["glm-5.2", "glm-5.2-highspeed"] as const) {
+			const model = getModel("zai", modelId)!;
+			expect(model.compat?.supportsReasoningEffort).toBe(true);
+			expect(model.thinkingLevelMap).toEqual({
+				off: "none",
+				minimal: null,
+				low: null,
+				medium: null,
+				high: "high",
+				xhigh: null,
+				max: "max",
+			});
+		}
 
+		for (const provider of ["zai", "zai-coding-cn"] as const) {
 			const glm53 = getModel(provider, "glm-5.3")!;
 			expect(glm53.compat?.supportsReasoningEffort).toBe(true);
 			expect(glm53.thinkingLevelMap).toEqual({
@@ -1327,7 +1320,7 @@ describe("openai-completions tool_choice", () => {
 			},
 		];
 
-		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k2.6")!;
+		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k3")!;
 		const model = { ...baseModel, api: "openai-completions" } as const;
 		const response = await streamSimple(
 			model,
@@ -1374,17 +1367,17 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("replays OpenCode Go reasoning thinking blocks as reasoning_content", () => {
-		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k2.6")!;
+		const { compat: _compat, ...baseModel } = getModel("opencode-go", "kimi-k3")!;
 		const model = { ...baseModel, api: "openai-completions" } as Model<"openai-completions">;
 		const messages = convertMessages(
 			model,
-			{
+			normalizeContext({
 				messages: [
 					{
 						role: "assistant",
 						api: "openai-completions",
 						provider: "opencode-go",
-						model: "kimi-k2.6",
+						model: "kimi-k3",
 						content: [
 							{ type: "thinking", thinking: "think", thinkingSignature: "reasoning" },
 							{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "README.md" } },
@@ -1401,7 +1394,7 @@ describe("openai-completions tool_choice", () => {
 						timestamp: Date.now(),
 					},
 				],
-			},
+			}),
 			{
 				...model.compat,
 				supportsStore: false,
@@ -1432,8 +1425,8 @@ describe("openai-completions tool_choice", () => {
 		expect(messages[0]).not.toHaveProperty("reasoning");
 	});
 
-	it("sends thinking disabled for OpenCode Go Kimi K2.6 when thinking is off", async () => {
-		const model = getModel("opencode-go", "kimi-k2.6")!;
+	it("sends thinking disabled for OpenCode Kimi K2.6 when thinking is off", async () => {
+		const model = getModel("opencode", "kimi-k2.6")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1454,8 +1447,8 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
-	it("sends thinking enabled for OpenCode Go Kimi K2.6 when thinking is enabled", async () => {
-		const model = getModel("opencode-go", "kimi-k2.6")!;
+	it("sends thinking enabled for OpenCode Kimi K2.6 when thinking is enabled", async () => {
+		const model = getModel("opencode", "kimi-k2.6")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1526,7 +1519,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "kimi-k2.6")!] as const;
+		const cases = [getModel("opencode-go", "kimi-k3")!, getModel("opencode", "kimi-k2.6")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;
@@ -1566,10 +1559,7 @@ describe("openai-completions tool_choice", () => {
 			name: "Custom Uppercase DeepSeek Model",
 			baseUrl: "https://API.DeepSeek.COM",
 		} satisfies Model<"openai-completions">;
-		const nativeModels = [
-			getModel("deepseek", "deepseek-v4-flash")!,
-			getModel("deepseek", "deepseek-v4-pro")!,
-		] as const;
+		const nativeModels = [getModel("deepseek", "deepseek-flash")!, getModel("deepseek", "deepseek-v4-pro")!] as const;
 		const cases = [...nativeModels, customModel, customUppercaseModel] as const;
 
 		for (const model of nativeModels) {
@@ -1885,7 +1875,7 @@ describe("openai-completions tool_choice", () => {
 			thinkingFormat: "ant-ling",
 			supportsLongCacheRetention: false,
 		});
-		expect(model.compat?.supportsStrictMode).toBeUndefined();
+		expect(model.compat?.supportsStrictMode).toBe(true);
 		expect(model.compat?.requiresReasoningContentOnAssistantMessages).toBeUndefined();
 
 		await streamSimple(

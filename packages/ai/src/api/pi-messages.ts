@@ -13,7 +13,8 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	CacheRetention,
-	Context,
+	JsonObject,
+	JsonValue,
 	Model,
 	ProviderEnv,
 	SimpleStreamOptions,
@@ -21,11 +22,11 @@ import type {
 	StreamOptions,
 	ThinkingLevel,
 	ToolCall,
+	TranscriptContext,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
@@ -95,9 +96,9 @@ type PiMessagesErrorBody = {
 
 export class PiMessagesResponseError extends Error {
 	code?: string;
-	readonly diagnosticDetails: Record<string, unknown>;
+	readonly diagnosticDetails: JsonObject;
 
-	constructor(message: string, code: string | undefined, diagnosticDetails: Record<string, unknown>) {
+	constructor(message: string, code: string | undefined, diagnosticDetails: JsonObject) {
 		super(message);
 		this.name = "PiMessagesResponseError";
 		this.code = code;
@@ -147,8 +148,8 @@ function createPiMessagesResponseError(
 		url: url.toString(),
 		status: response.status,
 		statusText: response.statusText,
-		error: errorBody?.error,
-		body: errorBody ? undefined : truncateDiagnosticString(body),
+		...(errorBody?.error === undefined ? {} : { error: errorBody.error as JsonValue }),
+		...(errorBody ? {} : { body: truncateDiagnosticString(body) }),
 		timestampMs: Date.now(),
 	});
 }
@@ -175,7 +176,7 @@ function appendRewriteDiagnostic(message: AssistantMessage, rewrite: PiMessagesR
 	});
 }
 
-function createEventConverter(model: Model<"pi-messages">, toolCallParsing: StreamOptions["toolCallParsing"]) {
+function createEventConverter(model: Model<"pi-messages">) {
 	const partial: AssistantMessage = {
 		role: "assistant",
 		content: [],
@@ -247,22 +248,14 @@ function createEventConverter(model: Model<"pi-messages">, toolCallParsing: Stre
 					name: event.toolName,
 					arguments: {},
 				};
-				if (toolCallParsing !== "final") toolJson.set(event.contentIndex, "");
+				toolJson.set(event.contentIndex, "");
 				break;
 			case "toolcall_delta": {
-				if (toolCallParsing === "final") {
-					const content = [...partial.content];
-					content[event.contentIndex] = { ...(content[event.contentIndex] as ToolCall) };
-					// Preserve empty delta arguments if the producer reaches toolcall_end before the consumer drains the queue.
-					return { ...event, partial: { ...partial, content } };
-				}
 				const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
 				toolJson.set(event.contentIndex, json);
-				(partial.content[event.contentIndex] as ToolCall).arguments =
-					parseStreamingJson<ToolCall["arguments"]>(json);
 				break;
 			}
-			case "toolcall_end": {
+			case "toolcall_end":
 				Object.assign(partial.content[event.contentIndex]!, event.toolCall);
 				toolJson.delete(event.contentIndex);
 				return {
@@ -271,7 +264,6 @@ function createEventConverter(model: Model<"pi-messages">, toolCallParsing: Stre
 					toolCall: partial.content[event.contentIndex] as ToolCall,
 					partial,
 				};
-			}
 		}
 
 		return { ...event, partial } as AssistantMessageEvent;
@@ -359,11 +351,11 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 
 export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 	model: Model<"pi-messages">,
-	context: Context,
+	context: TranscriptContext,
 	options?: PiMessagesOptions,
 ): AssistantMessageEventStream => {
 	const eventStream = new AssistantMessageEventStream();
-	const convertEvent = createEventConverter(model, options?.toolCallParsing);
+	const convertEvent = createEventConverter(model);
 
 	void (async () => {
 		try {
@@ -417,6 +409,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			}
 
 			for await (const piEvent of readPiMessagesEvents(response.body)) {
+				await options?.onProviderStreamEvent?.(piEvent, model);
 				const event = convertEvent(piEvent);
 				eventStream.push(event);
 				if (event.type === "done" || event.type === "error") {
@@ -435,7 +428,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 
 export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = (
 	model: Model<"pi-messages">,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const extra = options as PiMessagesOptions | undefined;
