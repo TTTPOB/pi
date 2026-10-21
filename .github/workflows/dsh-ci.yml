@@ -46,4 +46,4 @@ jobs:
           npm run build:offline --workspace packages/ai
       - name: Test fork behavior without provider credentials
         working-directory: packages/ai
-        run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts
+        run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts test/openai-responses-whitespace-guard.test.ts

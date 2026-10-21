@@ -8,7 +8,7 @@ import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 
 const patched = process.argv[2] === "patched";
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
-assert.equal(version, patched ? "1.1.0-fork1" : "1.1.0");
+assert.equal(version, patched ? "1.1.0-fork2" : "1.1.0");
 const require = createRequire(import.meta.url);
 const adapterRequire = createRequire(require.resolve("@deepseek-ai/dsh-llm-pi-ai"));
 const piEntry = "@earendil-works/pi-ai/api/openai-completions";

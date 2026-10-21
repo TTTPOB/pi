@@ -66,7 +66,7 @@ jobs:
           npm run build --workspace packages/telemetry
           npm run build:offline --workspace packages/ai
           cd packages/ai
-          node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts
+          node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts test/openai-responses-whitespace-guard.test.ts
       - name: Pack and verify artifact identity
         env:
           EXPECTED_VERSION: ${{ steps.version.outputs.package_version }}

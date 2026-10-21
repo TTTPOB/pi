@@ -1,4 +1,4 @@
-# DSH 的 pi-ai 1.1.0-fork1
+# DSH 的 pi-ai 1.1.0-fork2
 
 基线：Pi tag `v1.1.0`，commit `abe508e1b`。本 fork 只发布 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
@@ -12,7 +12,9 @@ DSH tag `dsh-v0.2.1-rc.1` 在仓库根的 `pnpm-workspace.yaml` 对 pi-ai 1.1.0 
 2. `OpenAIResponsesCompat.systemPromptFormat?: "input" | "instructions"` 默认 `"input"`。`"instructions"` 将归一后首条 `SystemMessage` 的文本和 sections 放入顶层 `instructions`，并从 input 中省略该条提示。后续系统消息继续遵循 1.1.0 transcript 规则：不支持中途系统消息时先折叠；支持时保留原位置及工具增量。来自旧 fork commit `744bbc935`，按 1.1.0 新 transcript 结构重写。
 3. OpenAI Responses 在 `cacheRetention: "none"` 时仍保留 `sessionId` 对应的身份/路由 header；`prompt_cache_key` 仍关闭，header 显式覆盖规则不变。来自旧 fork commit `d972afc7b`。不扩展到其他 API。
 
-Pi 1.1.0 尚未包含上述三项等价行为。旧 fork `1fe0048d4` 中的旧选项与整套历史不重放，只保留 DSH rc.1 patch 的净行为。
+4. OpenAI Responses 流退化熔断：同一输出项（文本、refusal、推理、函数参数、自定义工具输入）末尾连续空白达到 32768 字符，或以 1–100 字符为周期严格重复达到 32768 字符时中断流，错误文案含 `degenerate output` 并归类为可重试；此时工具尚未执行。fork2 新增。
+
+Pi 1.1.0 尚未包含上述四项等价行为。旧 fork `1fe0048d4` 中的旧选项与整套历史不重放，只保留 DSH rc.1 patch 的净行为。
 
 ## 本地构建与测试
 
