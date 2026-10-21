@@ -196,3 +196,93 @@ describe("OpenAI Responses consecutive whitespace guard", () => {
 		if (block?.type === "text") expect(block.text).toBe(deltas.join(""));
 	});
 });
+
+function chunkText(text: string, chunkSize: number): string[] {
+	const deltas: string[] = [];
+	for (let i = 0; i < text.length; i += chunkSize) {
+		deltas.push(text.slice(i, i + chunkSize));
+	}
+	return deltas;
+}
+
+function repeatPattern(pattern: string, length: number): string {
+	let text = "";
+	while (text.length < length) text += pattern;
+	return text.slice(0, length);
+}
+
+describe("OpenAI Responses repeated-pattern guard", () => {
+	it("aborts output_text deltas that repeat a short pattern", async () => {
+		const text = repeatPattern("abc\n", THRESHOLD + 5000);
+		const { result } = await runStream(textEvents(chunkText(text, 2048)));
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe(
+			"Provider stream error: output item 0 repeated a 4-character pattern for 32768 characters (degenerate output); aborting",
+		);
+		expect(isRetryableAssistantError(result)).toBe(true);
+	});
+
+	it("aborts function_call_arguments that repeat a 90-character pattern and never completes the tool call", async () => {
+		const pattern = Array.from({ length: 90 }, (_, i) => String.fromCharCode(0x4e00 + i)).join("");
+		const text = repeatPattern(pattern, THRESHOLD + 5000);
+		const { result, eventTypes } = await runStream(functionCallEvents(chunkText(text, 2048)));
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("repeated a 90-character pattern");
+		expect(isRetryableAssistantError(result)).toBe(true);
+		expect(eventTypes).not.toContain("toolcall_end");
+		const parsedCalls = result.content.filter(
+			(block) => block.type === "toolCall" && Object.keys(block.arguments).length > 0,
+		);
+		expect(parsedCalls).toHaveLength(0);
+	});
+
+	it("aborts a period-1 non-whitespace flood", async () => {
+		const { result } = await runStream(textEvents(chunkText("}".repeat(THRESHOLD + 5000), 4096)));
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("repeated a 1-character pattern");
+		expect(isRetryableAssistantError(result)).toBe(true);
+	});
+
+	it("resets the periodic run when the pattern is broken", async () => {
+		// 30000 chars of "ab", one break, then 30000 more: neither run reaches the
+		// 32768 character threshold.
+		const text = "ab".repeat(15000) + "x" + "ab".repeat(15000);
+		const { result } = await runStream(textEvents(chunkText(text, 4096)));
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+		const block = result.content[0];
+		expect(block?.type).toBe("text");
+		if (block?.type === "text") expect(block.text).toHaveLength(60001);
+	});
+
+	it("does not abort long varied content", async () => {
+		let text = "";
+		for (let i = 0; text.length < 200_000; i++) {
+			text += "line " + i + ": const value_" + i * 7919 + " = compute(" + i * 104729 + ", " + (i % 97) + ");\n";
+		}
+		const { result } = await runStream(textEvents(chunkText(text, 4096)));
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+		const block = result.content[0];
+		expect(block?.type).toBe("text");
+		if (block?.type === "text") expect(block.text).toBe(text);
+	});
+
+	it("does not abort patterns longer than the period bound", async () => {
+		// 101 distinct code units: the only true period is 101, above the 100 bound.
+		const pattern = Array.from({ length: 101 }, (_, i) => String.fromCharCode(0x4e00 + i)).join("");
+		const text = repeatPattern(pattern, THRESHOLD + 5000);
+		const { result } = await runStream(textEvents(chunkText(text, 2048)));
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+		const block = result.content[0];
+		expect(block?.type).toBe("text");
+		if (block?.type === "text") expect(block.text).toBe(text);
+	});
+});
