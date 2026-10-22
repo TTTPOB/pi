@@ -86,7 +86,12 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 	return "short";
 }
 
-function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
+// Stream guard limits are resolved by the shared parser, not the request serializer.
+type OpenAIResponsesRequestCompat = Required<
+	Omit<OpenAIResponsesCompat, "maxConsecutiveWhitespaceChars" | "maxRepeatedPatternChars">
+>;
+
+function getCompat(model: Model<"openai-responses">): OpenAIResponsesRequestCompat {
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
 		systemPromptFormat: model.compat?.systemPromptFormat ?? "input",
@@ -103,7 +108,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 }
 
 function getPromptCacheRetention(
-	compat: Required<OpenAIResponsesCompat>,
+	compat: OpenAIResponsesRequestCompat,
 	cacheRetention: CacheRetention,
 ): "24h" | undefined {
 	return cacheRetention === "long" && compat.supportsLongCacheRetention && !compat.supportsExplicitPromptCacheMode
@@ -112,7 +117,7 @@ function getPromptCacheRetention(
 }
 
 function getPromptCacheOptions(
-	compat: Required<OpenAIResponsesCompat>,
+	compat: OpenAIResponsesRequestCompat,
 	cacheRetention: CacheRetention,
 ): ResponseCreateParamsStreaming["prompt_cache_options"] {
 	if (!compat.supportsExplicitPromptCacheMode) return undefined;
@@ -309,7 +314,7 @@ function buildParams(
 	model: Model<"openai-responses">,
 	context: TranscriptContext,
 	options: OpenAIResponsesOptions | undefined,
-	compat: Required<OpenAIResponsesCompat> = getCompat(model),
+	compat: OpenAIResponsesRequestCompat = getCompat(model),
 	grammarToolInputProperties: ReadonlyMap<string, string> = createGrammarToolInputProperties(
 		getDeclaredTools(context.messages),
 		compat.supportsOpenAIGrammarTools,

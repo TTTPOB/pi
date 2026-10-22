@@ -1422,6 +1422,8 @@ interface OpenAICompletionsCompat {
 }
 
 interface OpenAIResponsesCompat {
+  maxConsecutiveWhitespaceChars?: number; // Per-output-item UTF-16 whitespace limit (default: 32768; 0 disables this check)
+  maxRepeatedPatternChars?: number; // Per-output-item UTF-16 repeated-pattern limit, periods 1–100 (default: 32768; 0 disables this check)
   supportsDeveloperRole?: boolean;   // Whether provider supports `developer` role vs `system` (default: true)
   sessionAffinityFormat?: 'openai' | 'openai-nosession' | 'openrouter'; // Session-affinity header format: 'openai' sends `session_id` and `x-client-request-id`; 'openai-nosession' sends `x-client-request-id`; 'openrouter' sends `x-session-id`. Does not affect the `prompt_cache_key` body param (default: auto-detected)
   supportsLongCacheRetention?: boolean; // Whether provider supports `prompt_cache_retention: "24h"` (default: true)
@@ -1429,6 +1431,8 @@ interface OpenAIResponsesCompat {
   supportsOpenAIGrammarTools?: boolean; // Whether to emit OpenAI custom Lark/regex grammar tools; false falls back to normal function tools (default: false; the generated catalog enables it for capable models)
 }
 ```
+
+The Responses stream limits apply to OpenAI, Azure, and Codex Responses. Counters persist across deltas within each output item; non-whitespace resets the whitespace counter. Pure whitespace also forms a period-1 pattern, so disabling both checks is required to allow an unlimited whitespace flood. These client-side limits do not change the request payload.
 
 OpenRouter requests send `x-session-id` from `sessionId` when prompt caching is enabled. Chat Completions and Anthropic Messages both auto-detect OpenRouter endpoints unless `sendSessionAffinityHeaders` is explicitly false. On Anthropic-compatible models, `sessionAffinityFormat: "openrouter"` selects `x-session-id`; when unset, the existing `x-session-affinity` format is used. Explicit request headers take precedence over generated headers.
 

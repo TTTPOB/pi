@@ -19,6 +19,7 @@ import type {
 	AssistantMessage,
 	ImageContent,
 	Model,
+	OpenAIResponsesCompat,
 	StopReason,
 	StreamOptions,
 	SystemMessage,
@@ -438,16 +439,16 @@ type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
  * non-whitespace character resets the counter, and total output length is not
  * limited here.
  */
-const MAX_CONSECUTIVE_WHITESPACE_CHARS = 32 * 1024;
+const DEFAULT_MAX_CONSECUTIVE_WHITESPACE_CHARS = 32 * 1024;
 
 /**
  * The same models can loop on a short pattern forever (for example "foo bar"
  * lines, "}}}}", or a repeated two-character phrase). Abort once the tail of one
  * output item is exactly periodic with a period of at most
- * MAX_REPEATED_PATTERN_PERIOD UTF-16 code units for MAX_REPEATED_PATTERN_CHARS
+ * MAX_REPEATED_PATTERN_PERIOD UTF-16 code units for DEFAULT_MAX_REPEATED_PATTERN_CHARS
  * characters. Longer periods are left alone.
  */
-const MAX_REPEATED_PATTERN_CHARS = 32 * 1024;
+const DEFAULT_MAX_REPEATED_PATTERN_CHARS = 32 * 1024;
 const MAX_REPEATED_PATTERN_PERIOD = 100;
 
 /** Matches the ECMAScript whitespace set without allocating a string per character. */
@@ -482,6 +483,14 @@ class DegenerateOutputTracker {
 	private readonly tail = new Uint16Array(MAX_REPEATED_PATTERN_PERIOD);
 	private readonly periodicRuns = new Uint32Array(MAX_REPEATED_PATTERN_PERIOD + 1);
 
+	private readonly maxConsecutiveWhitespaceChars: number;
+	private readonly maxRepeatedPatternChars: number;
+
+	constructor(maxConsecutiveWhitespaceChars: number, maxRepeatedPatternChars: number) {
+		this.maxConsecutiveWhitespaceChars = maxConsecutiveWhitespaceChars;
+		this.maxRepeatedPatternChars = maxRepeatedPatternChars;
+	}
+
 	feed(outputIndex: number, delta: string): void {
 		const tail = this.tail;
 		const periodicRuns = this.periodicRuns;
@@ -490,15 +499,19 @@ class DegenerateOutputTracker {
 			const code = delta.charCodeAt(i);
 			if (isWhitespaceCode(code)) {
 				this.trailingWhitespace++;
-				if (this.trailingWhitespace >= MAX_CONSECUTIVE_WHITESPACE_CHARS) {
+				if (
+					this.maxConsecutiveWhitespaceChars > 0 &&
+					this.trailingWhitespace >= this.maxConsecutiveWhitespaceChars
+				) {
 					throw new Error(
-						`Provider stream error: output item ${outputIndex} emitted ${MAX_CONSECUTIVE_WHITESPACE_CHARS} consecutive whitespace characters (degenerate output); aborting`,
+						`Provider stream error: output item ${outputIndex} emitted ${this.maxConsecutiveWhitespaceChars} consecutive whitespace characters (degenerate output); aborting`,
 					);
 				}
 			} else {
 				this.trailingWhitespace = 0;
 			}
 
+			if (this.maxRepeatedPatternChars === 0) continue;
 			const tailIndex = this.tailIndex;
 			const maxPeriod = this.tailFilled < ringSize ? this.tailFilled : ringSize;
 			for (let period = 1; period <= maxPeriod; period++) {
@@ -509,9 +522,9 @@ class DegenerateOutputTracker {
 				}
 				const run = periodicRuns[period] + 1;
 				periodicRuns[period] = run;
-				if (run + period >= MAX_REPEATED_PATTERN_CHARS) {
+				if (run + period >= this.maxRepeatedPatternChars) {
 					throw new Error(
-						`Provider stream error: output item ${outputIndex} repeated a ${period}-character pattern for ${MAX_REPEATED_PATTERN_CHARS} characters (degenerate output); aborting`,
+						`Provider stream error: output item ${outputIndex} repeated a ${period}-character pattern for ${this.maxRepeatedPatternChars} characters (degenerate output); aborting`,
 					);
 				}
 			}
@@ -532,6 +545,10 @@ export async function processResponsesStream<TApi extends Api>(
 ): Promise<void> {
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
+	const compat = model.compat as OpenAIResponsesCompat | undefined;
+	const maxConsecutiveWhitespaceChars =
+		compat?.maxConsecutiveWhitespaceChars ?? DEFAULT_MAX_CONSECUTIVE_WHITESPACE_CHARS;
+	const maxRepeatedPatternChars = compat?.maxRepeatedPatternChars ?? DEFAULT_MAX_REPEATED_PATTERN_CHARS;
 	const degenerateOutputByOutputIndex = new Map<number, DegenerateOutputTracker>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
 	// Feed every provider delta through the degenerate-output tracker for its output
@@ -541,7 +558,7 @@ export async function processResponsesStream<TApi extends Api>(
 	const trackDegenerateOutput = (outputIndex: number, delta: string): void => {
 		let tracker = degenerateOutputByOutputIndex.get(outputIndex);
 		if (!tracker) {
-			tracker = new DegenerateOutputTracker();
+			tracker = new DegenerateOutputTracker(maxConsecutiveWhitespaceChars, maxRepeatedPatternChars);
 			degenerateOutputByOutputIndex.set(outputIndex, tracker);
 		}
 		tracker.feed(outputIndex, delta);

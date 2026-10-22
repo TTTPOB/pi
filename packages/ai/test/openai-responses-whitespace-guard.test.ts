@@ -1,7 +1,7 @@
 import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import type { AssistantMessage, Model } from "../src/types.ts";
+import type { AssistantMessage, Model, OpenAIResponsesCompat } from "../src/types.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -140,9 +140,12 @@ function functionCallEvents(deltas: readonly string[]): ResponseStreamEvent[] {
 	return events;
 }
 
-async function runStream(events: ResponseStreamEvent[]): Promise<{ result: AssistantMessage; eventTypes: string[] }> {
+async function runStream(
+	events: ResponseStreamEvent[],
+	compat?: OpenAIResponsesCompat,
+): Promise<{ result: AssistantMessage; eventTypes: string[] }> {
 	mockState.events = events;
-	const stream = streamOpenAIResponses(createModel(), createContext(), { apiKey: "test" });
+	const stream = streamOpenAIResponses({ ...createModel(), compat }, createContext(), { apiKey: "test" });
 	const eventTypes: string[] = [];
 	for await (const event of stream) eventTypes.push(event.type);
 	return { result: await stream.result(), eventTypes };
@@ -249,7 +252,7 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 	it("resets the periodic run when the pattern is broken", async () => {
 		// 30000 chars of "ab", one break, then 30000 more: neither run reaches the
 		// 32768 character threshold.
-		const text = "ab".repeat(15000) + "x" + "ab".repeat(15000);
+		const text = `${"ab".repeat(15000)}x${"ab".repeat(15000)}`;
 		const { result } = await runStream(textEvents(chunkText(text, 4096)));
 
 		expect(result.stopReason).toBe("stop");
@@ -262,7 +265,7 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 	it("does not abort long varied content", async () => {
 		let text = "";
 		for (let i = 0; text.length < 200_000; i++) {
-			text += "line " + i + ": const value_" + i * 7919 + " = compute(" + i * 104729 + ", " + (i % 97) + ");\n";
+			text += `line ${i}: const value_${i * 7919} = compute(${i * 104729}, ${i % 97});\n`;
 		}
 		const { result } = await runStream(textEvents(chunkText(text, 4096)));
 
@@ -284,5 +287,56 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 		const block = result.content[0];
 		expect(block?.type).toBe("text");
 		if (block?.type === "text") expect(block.text).toBe(text);
+	});
+});
+describe("OpenAI Responses configurable degenerate-output limits", () => {
+	it.each([THRESHOLD, 5000])("aborts whitespace exactly at %i characters", async (limit) => {
+		const compat = limit === THRESHOLD ? undefined : { maxConsecutiveWhitespaceChars: limit };
+		const below = await runStream(textEvents([" ".repeat(limit - 1)]), compat);
+		expect(below.result.stopReason).toBe("stop");
+		const at = await runStream(textEvents([" ".repeat(limit - 1), " "]), compat);
+		expect(at.result.stopReason).toBe("error");
+		expect(at.result.errorMessage).toContain(`${limit} consecutive whitespace characters`);
+	});
+
+	it.each([THRESHOLD, 5000])("aborts repetition exactly at %i characters", async (limit) => {
+		const compat = limit === THRESHOLD ? undefined : { maxRepeatedPatternChars: limit };
+		const text = repeatPattern("abc", limit);
+		const below = await runStream(textEvents([text.slice(0, -1)]), compat);
+		expect(below.result.stopReason).toBe("stop");
+		const at = await runStream(textEvents([text.slice(0, -1), text.slice(-1)]), compat);
+		expect(at.result.stopReason).toBe("error");
+		expect(at.result.errorMessage).toContain(`3-character pattern for ${limit} characters`);
+	});
+
+	it("accumulates whitespace across deltas and resets at non-whitespace within a delta", async () => {
+		const compat = { maxConsecutiveWhitespaceChars: 5, maxRepeatedPatternChars: 0 };
+		const below = await runStream(textEvents(["  ", "  x  ", "  "]), compat);
+		expect(below.result.stopReason).toBe("stop");
+		const at = await runStream(textEvents(["  ", "  x  ", "  ", " "]), compat);
+		expect(at.result.errorMessage).toContain("5 consecutive whitespace characters");
+	});
+
+	it("disables only whitespace detection when its limit is zero", async () => {
+		const { result } = await runStream(textEvents([" ".repeat(THRESHOLD)]), {
+			maxConsecutiveWhitespaceChars: 0,
+		});
+		expect(result.errorMessage).toContain("1-character pattern for 32768 characters");
+	});
+
+	it("disables only repeated-pattern detection when its limit is zero", async () => {
+		const compat = { maxRepeatedPatternChars: 0 };
+		const repeated = await runStream(textEvents(["x".repeat(THRESHOLD + 1)]), compat);
+		expect(repeated.result.stopReason).toBe("stop");
+		const whitespace = await runStream(textEvents([" ".repeat(THRESHOLD)]), compat);
+		expect(whitespace.result.errorMessage).toContain("32768 consecutive whitespace characters");
+	});
+
+	it("allows both floods when both limits are zero", async () => {
+		const { result } = await runStream(textEvents([" ".repeat(THRESHOLD + 1), "x".repeat(THRESHOLD + 1)]), {
+			maxConsecutiveWhitespaceChars: 0,
+			maxRepeatedPatternChars: 0,
+		});
+		expect(result.stopReason).toBe("stop");
 	});
 });

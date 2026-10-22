@@ -1,4 +1,4 @@
-# DSH 的 pi-ai 1.1.0-fork2
+# DSH 的 pi-ai 1.1.0-fork3
 
 基线：Pi tag `v1.1.0`，commit `abe508e1b`。本 fork 只发布 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
@@ -12,7 +12,7 @@ DSH tag `dsh-v0.2.1-rc.1` 在仓库根的 `pnpm-workspace.yaml` 对 pi-ai 1.1.0 
 2. `OpenAIResponsesCompat.systemPromptFormat?: "input" | "instructions"` 默认 `"input"`。`"instructions"` 将归一后首条 `SystemMessage` 的文本和 sections 放入顶层 `instructions`，并从 input 中省略该条提示。后续系统消息继续遵循 1.1.0 transcript 规则：不支持中途系统消息时先折叠；支持时保留原位置及工具增量。来自旧 fork commit `744bbc935`，按 1.1.0 新 transcript 结构重写。
 3. OpenAI Responses 在 `cacheRetention: "none"` 时仍保留 `sessionId` 对应的身份/路由 header；`prompt_cache_key` 仍关闭，header 显式覆盖规则不变。来自旧 fork commit `d972afc7b`。不扩展到其他 API。
 
-4. OpenAI Responses 流退化熔断：同一输出项（文本、refusal、推理、函数参数、自定义工具输入）末尾连续空白达到 32768 字符，或以 1–100 字符为周期严格重复达到 32768 字符时中断流，错误文案含 `degenerate output` 并归类为可重试；此时工具尚未执行。fork2 新增。
+4. OpenAI Responses 流退化熔断：同一输出项（文本、refusal、推理、函数参数、自定义工具输入）末尾连续空白达到 32768 字符，或以 1–100 字符为周期严格重复达到 32768 字符时中断流，错误文案含 `degenerate output` 并归类为可重试；此时工具尚未执行。fork2 新增。fork3 支持通过 `model.compat.maxConsecutiveWhitespaceChars` 和 `maxRepeatedPatternChars` 分别配置阈值，单位为 UTF-16 code unit，默认均为 32768，0 关闭对应检测；纯空白也会命中周期为 1 的重复模式，完全关闭空白熔断需将两项均设为 0。周期上限固定为 100，计数按输出项隔离。
 
 Pi 1.1.0 尚未包含上述四项等价行为。旧 fork `1fe0048d4` 中的旧选项与整套历史不重放，只保留 DSH rc.1 patch 的净行为。
 
@@ -21,7 +21,7 @@ Pi 1.1.0 尚未包含上述四项等价行为。旧 fork `1fe0048d4` 中的旧�
 遵循原仓库 npm 工具链，仅安装所需 workspace；测试不继承真实 API 凭据：
 
 ```sh
-export NODE_OPTIONS=--max-old-space-size=3072
+export NODE_OPTIONS=--max-old-space-size=4096
 npm install --ignore-scripts --package-lock=false --workspace packages/ai --workspace packages/telemetry --include-workspace-root
 npm run build --workspace packages/telemetry
 npm run check:model-data --workspace packages/ai

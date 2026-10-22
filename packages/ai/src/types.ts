@@ -888,6 +888,10 @@ export interface OpenAICompletionsCompat {
 
 /** Compatibility settings for OpenAI Responses APIs. */
 export interface OpenAIResponsesCompat {
+	/** Consecutive whitespace limit per output item, in UTF-16 code units. Default: 32768; 0 disables this check. Whitespace may still trigger the repeated-pattern check. */
+	maxConsecutiveWhitespaceChars?: number;
+	/** Repeated-pattern limit per output item, in UTF-16 code units, for periods of 1–100. Default: 32768; 0 disables this check. */
+	maxRepeatedPatternChars?: number;
 	/** Where to send the leading system prompt. Later system messages retain transcript semantics. Default: `input`. */
 	systemPromptFormat?: "input" | "instructions";
 	/** Whether the provider supports the `developer` role (vs `system`). Default: true. */
