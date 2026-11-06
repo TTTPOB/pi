@@ -1,24 +1,29 @@
-# DSH 的 pi-ai 1.1.0-fork3
+# DSH 的 pi-ai 1.3.0-fork1
 
-基线：Pi tag `v1.1.0`，commit `abe508e1b`。本 fork 只发布 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
+基线：Pi tag `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`。本 fork 只交付 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
 ## 为什么仍需要 fork
 
-DSH tag `dsh-v0.2.1-rc.1` 在仓库根的 `pnpm-workspace.yaml` 对 pi-ai 1.1.0 声明 `patchedDependencies`，但已发布的 `@deepseek-ai/dsh-llm-pi-ai@0.2.1-rc.1` 只声明 `@earendil-works/pi-ai: ^1.1.0`，tarball 不包含该 patch。其运行时代码保留对 pi-ai 的外部导入。在独立空目录通过 pnpm 11.28.5 安装这两个固定版本后，实际解析到的 pi-ai `openai-completions` 仍在每次工具参数 delta 上运行 `parseStreamingJson`。消费者不会继承 DSH 源码仓库的 patch。
+DSH `dsh-v0.2.2-rc.1` 在根工作区为 pi-ai 1.3.0 声明 package patch，已发布的 `@deepseek-ai/dsh-llm-pi-ai@0.2.2-rc.1` 消费者不会继承该源码 patch。消费者必须用 override 将所有 pi-ai 依赖替换为本 fork。独立消费者 smoke 会核对 adapter 与直接导入解析到同一份 pi-ai，并对比官方版本的行为。
 
-## 保留的改动
+## 保留的四项改动
 
-1. 将 DSH 上游 patch 的六个 hunk 移到源码：Anthropic Messages、Bedrock、Mistral、OpenAI Completions、OpenAI Responses shared、pi-messages 不再逐 delta 解析 JSON 工具参数，仍保留各自的结束解析及工具参数原始 delta。Anthropic Messages 仅原样应用上游 patch，没有额外修改或分析。grammar/custom 工具的流式处理不变；不新增旧 `toolCallParsing` 选项。
-2. `OpenAIResponsesCompat.systemPromptFormat?: "input" | "instructions"` 默认 `"input"`。`"instructions"` 将归一后首条 `SystemMessage` 的文本和 sections 放入顶层 `instructions`，并从 input 中省略该条提示。后续系统消息继续遵循 1.1.0 transcript 规则：不支持中途系统消息时先折叠；支持时保留原位置及工具增量。来自旧 fork commit `744bbc935`，按 1.1.0 新 transcript 结构重写。
-3. OpenAI Responses 在 `cacheRetention: "none"` 时仍保留 `sessionId` 对应的身份/路由 header；`prompt_cache_key` 仍关闭，header 显式覆盖规则不变。来自旧 fork commit `d972afc7b`。不扩展到其他 API。
+1. Anthropic Messages、Bedrock、Mistral、OpenAI Completions、OpenAI Responses shared、pi-messages 不在每次 JSON 工具参数 delta 上解析 JSON，保留原始 delta 和各自结束阶段的解析。六处与 DSH 0.2.2 patch 净行为一致；grammar/custom 工具处理不变。`test/final-tool-arguments.test.ts` 对六种 API 验证 delta 与最终参数。
+2. `OpenAIResponsesCompat.systemPromptFormat?: "input" | "instructions"` 默认 `"input"`。`"instructions"` 将归一后首条系统消息的文本与 sections 放到顶层 instructions，input 不重复该提示。中途系统消息继续使用 1.3.0 transcript 规则：不支持时折叠，支持时保留位置与工具增量。字段现定义于 `src/providers/compat-schema.ts`，类型由 schema 推导。
+3. OpenAI Responses 在 `cacheRetention: "none"` 时保留 sessionId 身份/路由 header，但不发送 prompt_cache_key；显式 header 覆盖规则不变。仅作用于 Responses。
+4. OpenAI Responses 流退化检测：每个输出项分别累计文本、refusal、推理、函数参数及自定义工具输入的 delta；连续空白或周期 1–100 的严格重复达到阈值时中断，以 `degenerate output` 错误标为可重试。`model.compat.maxConsecutiveWhitespaceChars`、`maxRepeatedPatternChars` 默认各为 32768 UTF-16 code units，0 关闭对应检测。纯空白也会命中周期 1，完全关闭需两项均为 0。工具参数未完成时不发 toolcall_end。
 
-4. OpenAI Responses 流退化熔断：同一输出项（文本、refusal、推理、函数参数、自定义工具输入）末尾连续空白达到 32768 字符，或以 1–100 字符为周期严格重复达到 32768 字符时中断流，错误文案含 `degenerate output` 并归类为可重试；此时工具尚未执行。fork2 新增。fork3 支持通过 `model.compat.maxConsecutiveWhitespaceChars` 和 `maxRepeatedPatternChars` 分别配置阈值，单位为 UTF-16 code unit，默认均为 32768，0 关闭对应检测；纯空白也会命中周期为 1 的重复模式，完全关闭空白熔断需将两项均设为 0。周期上限固定为 100，计数按输出项隔离。
+Pi 1.3.0 没有上述四项等价实现。上游新增的兼容性 schema、configuration_update effort 与结束阶段 JSON 修复逻辑直接沿用，不重复实现。
 
-Pi 1.1.0 尚未包含上述四项等价行为。旧 fork `1fe0048d4` 中的旧选项与整套历史不重放，只保留 DSH rc.1 patch 的净行为。
+## Gemini 签名移植
+
+沿用 DSH 上游 `e8e43fc4c0` 的 pi-ai 1.3.0 patch：OpenAI Completions 接收工具调用的 `extra_content.google.thought_signature`，保存到对应工具调用的 thoughtSignature；回放时还原到原调用，不把旧 OpenRouter encrypted reasoning 签名当作 Gemini 签名。只接受非空字符串，支持仅携带签名的 delta。`test/openai-completions-gemini-signature.test.ts` 参照 DSH `b235acebb2` 协议往返回归，验证并行调用仅第一条签名、收发和历史对象不变。
 
 ## 本地构建与测试
 
-遵循原仓库 npm 工具链，仅安装所需 workspace；测试不继承真实 API 凭据：
+使用原仓库 npm 工具链，仅安装所需 workspace。模型 JSON 属于忽略的生成数据：先在空目录运行 `npm pack @earendil-works/pi-ai@1.3.0 --ignore-scripts` 并解包，将其 `package/dist/providers/data/.` 复制到本地 `packages/ai/src/providers/data/`。check:model-data 会核对 manifest/hash，不重新抓取模型数据。
+
+在仓库根执行：
 
 ```sh
 export NODE_OPTIONS=--max-old-space-size=4096
@@ -26,21 +31,25 @@ npm install --ignore-scripts --package-lock=false --workspace packages/ai --work
 npm run build --workspace packages/telemetry
 npm run check:model-data --workspace packages/ai
 npm run build:offline --workspace packages/ai
+mkdir -p .artifacts
+npm pack --ignore-scripts --workspace packages/ai --pack-destination "$PWD/.artifacts"
 cd packages/ai
-env -i PATH="$PATH" HOME="$PWD/../../.artifacts/test-home" NODE_OPTIONS="$NODE_OPTIONS" PI_NO_LOCAL_LLM=1 AWS_EC2_METADATA_DISABLED=true node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2
-pnpm pack --pack-destination /home/tpob/playground/dsh/.upgrade-rc1/tarballs/
+env -i PATH="$PATH" HOME="$PWD/../../.artifacts/test-home" NODE_OPTIONS="$NODE_OPTIONS" PI_NO_LOCAL_LLM=1 AWS_EC2_METADATA_DISABLED=true node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2 test/final-tool-arguments.test.ts test/openai-responses-fork-compat.test.ts test/openai-responses-whitespace-guard.test.ts test/openai-completions-gemini-signature.test.ts
 ```
 
-Pi 将模型 JSON 数据作为忽略的生成文件。为保持 v1.1.0 模型目录不变，本次从独立消费者安装中官方 pi-ai 1.1.0 的 `dist/providers/data` 复制到本地 `src/providers/data`，由 `check:model-data` 核验 manifest/hash 与当前源码目录一致；没有重新抓取或更新模型数据，也没有提交生成文件。
+`.artifacts/` 已被根 .gitignore 忽略。模型数据及 tarball 不提交。
 
-最终 tarball 在另一个空目录中通过消费者的 `pnpm-workspace.yaml` override 安装。override 必须覆盖所有 `@earendil-works/pi-ai` 传递依赖；只添加直接依赖不能保证替换 DSH 的 `^1.1.0`，因为该范围不接受 fork prerelease。将 `scripts/smoke-dsh-fork.mjs` 复制到消费者目录后运行 `node smoke-dsh-fork.mjs patched`，核对实际解析的 fork 版本、JSON delta 保持原样、最终参数正确、Responses instructions 不重复发送、无 cache 时 session identity 仍存在。对官方 1.1.0 消费者运行同一脚本的 `official` 模式，可复现相反的基准行为。无需连接真实 provider。
+根 lockfile 沿用合并后的上游 1.3.0 依赖图；单包 fork 的 prerelease 与其他 Pi workspace 要求的精确官方版本不匹配，因此不用于 npm ci。选定 workspace 安装显式使用 `--package-lock=false`。根 `npm run check` 的 coding-agent install-lock 校验也会因该版本不匹配失败，属单包交付的已知例外，不修改其他 Pi 包规避。验收以 Pi AI scoped 构建、测试和独立 tarball 消费者 smoke 为准。
 
-本次保持 monorepo 根 lockfile 不变：npm 对 fork prerelease 重新解析会把其他 Pi workspace 的依赖升级到额外官方版本，超出本 fork 的单包交付范围。旧 lockfile 不适用于 fork manifest 的 `npm ci`，因此选定 workspace 的安装显式使用 `--package-lock=false`。以独立 tarball 消费者安装验证为交付依据。
+## 独立消费者 smoke
+
+分别创建两个空临时目录，各放一份 `scripts/smoke-dsh-fork.mjs`。消费者 package.json 声明 `private: true`、`type: "module"`，依赖 `@deepseek-ai/dsh-llm-pi-ai: "0.2.2-rc.1"` 与 pi-ai；pnpm-workspace.yaml 中 override **所有** `@earendil-works/pi-ai` 为 tarball 的绝对 `file:` 路径。运行 `pnpm install --ignore-scripts` 和 `node smoke-dsh-fork.mjs patched`。另一目录 override 为官方精确 `1.3.0`，运行 `official` 模式作对照。消费者使用用户级 pnpm store，不创建项目内 cache。临时目录与用户级 store 跨文件系统时，显式指定 `--store-dir <用户级 store 绝对路径> --package-import-method=copy`，避免 pnpm 自动改用 /tmp 的 store。
+
+smoke 验证实际模块解析、delta 参数快照与最终参数、instructions 不重复、关闭缓存时身份头仍存在及可配置退化检测。所有请求使用内存 mock，不连接真实 provider，不启动 DSH Host。
 
 ## GitHub Release
 
-- 长期发布分支为 `daily-driver`，位于 TTTPOB remote `fork`（github.com/TTTPOB/pi）；本地分支跟踪 `fork/daily-driver`，不跟踪第三方上游 `origin`。
-- 开发与测试使用独立分支或 worktree。
-- 发布前合并到长期分支并 push，等待 `DSH Pi AI CI`（`.github/workflows/dsh-ci.yml`）通过。
-- 仅从长期分支上的提交，通过 GitHub Actions `Release DSH Pi AI package`（`.github/workflows/dsh-release.yml`）发布 `pi-ai-v<package.version>`；tag 和 Release 资产不可变，不上传本地构建，不发布 npm。
-- 本机约 13 GB 内存，本地仅执行上述 Pi AI scoped 检查；重型 monorepo 检查交给 CI。
+- 长期分支：TTTPOB/pi 的 `fork/daily-driver`。开发使用独立 worktree。
+- `DSH Pi AI CI` 在 daily-driver 与 upgrade/** push、目标为 daily-driver 的 PR 上执行离线构建和四份 fork 回归测试。
+- 合并到长期分支并确认 CI 通过后，由 `Release DSH Pi AI package` 发布 `pi-ai-v<package.version>`。发布流程从 manifest 推导版本、恢复对应官方模型数据，构建后运行隔离消费者 smoke。
+- tag 和 Release 资产不可变，仅由 GitHub Actions 交付，不本地上传、不发布 npm。本地仅跑 scoped 检查；重型 monorepo 验证交给 CI。
