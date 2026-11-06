@@ -1,5 +1,6 @@
 import type * as BedrockSdk from "@aws-sdk/client-bedrock-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
@@ -116,6 +117,36 @@ function chatEvents() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("DSH final JSON tool arguments", () => {
+	it("parses Anthropic arguments only at content_block_stop", async () => {
+		const snapshots = recordDeltaArguments();
+		const events = [
+			{
+				type: "message_start",
+				message: { id: "msg_1", model: "test-model", usage: { input_tokens: 1, output_tokens: 0 } },
+			},
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "call_1", name: "read", input: {} },
+			},
+			{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":' } },
+			{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '"file.txt"}' } },
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+			{ type: "message_stop" },
+		];
+		const result = await streamAnthropic(model("anthropic-messages"), context, {
+			apiKey: "test",
+			fetch: async () =>
+				new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+					headers: { "content-type": "text/event-stream" },
+				}),
+		}).result();
+		expect(result.stopReason).toBe("toolUse");
+		expect(snapshots).toEqual([{}, {}]);
+		expect(result.content[0]).toMatchObject({ type: "toolCall", arguments: finalArguments });
+	});
+
 	it.each(["completions", "mistral"] as const)("does not parse %s arguments during deltas", async (api) => {
 		const snapshots = recordDeltaArguments();
 		const fetch = async () => response(chatEvents());
