@@ -39,7 +39,7 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
+import { parseToolCallArguments } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
@@ -398,6 +398,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				type?: string;
 				function?: { name?: string; arguments?: string };
 				custom?: { name?: string; input?: string };
+				extra_content?: { google?: { thought_signature?: unknown } };
 			};
 
 			let textBlock: TextContent | null = null;
@@ -461,7 +462,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							});
 						}
 					} else {
-						block.arguments = parseStreamingJson(block.partialArgs);
+						Object.assign(block, parseToolCallArguments(block.partialArgs));
 					}
 					// Finalize in-place and strip the scratch buffers so replay only
 					// carries parsed arguments.
@@ -589,21 +590,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				}
 
 				if (choice.delta) {
-					if (
-						choice.delta.content !== null &&
-						choice.delta.content !== undefined &&
-						choice.delta.content.length > 0
-					) {
-						const block = ensureTextBlock();
-						block.text += choice.delta.content;
-						stream.push({
-							type: "text_delta",
-							contentIndex: getContentIndex(block),
-							delta: choice.delta.content,
-							partial: output,
-						});
-					}
-
+					// Handle reasoning before content: some proxies (e.g. LiteLLM) aggregate reasoning and
+					// answer into one delta, and the thinking block must precede the text block.
 					// Some endpoints return reasoning in reasoning_content (llama.cpp),
 					// or reasoning (other openai compatible endpoints)
 					// Use the first non-empty reasoning field to avoid duplication
@@ -637,6 +625,34 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						}
 					}
 
+					const reasoningDetails = (choice.delta as { reasoning_details?: unknown }).reasoning_details;
+					if (Array.isArray(reasoningDetails)) {
+						for (const detail of reasoningDetails) {
+							if (!isOpenAIReasoningDetail(detail)) continue;
+							ensureThinkingBlock("");
+							streamedReasoningDetails ??= [];
+							// Keep provider replay data in the existing signature slot. OpenRouter streams
+							// reasoning_details as deltas: consecutive text/summary deltas are merged into
+							// logical entries, while encrypted entries remain opaque and discrete.
+							appendOpenAIReasoningDetail(streamedReasoningDetails, detail);
+						}
+					}
+
+					if (
+						choice.delta.content !== null &&
+						choice.delta.content !== undefined &&
+						choice.delta.content.length > 0
+					) {
+						const block = ensureTextBlock();
+						block.text += choice.delta.content;
+						stream.push({
+							type: "text_delta",
+							contentIndex: getContentIndex(block),
+							delta: choice.delta.content,
+							partial: output,
+						});
+					}
+
 					if (choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls as StreamingToolCallDelta[]) {
 							const block = ensureToolCallBlock(toolCall);
@@ -647,6 +663,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							const name = toolCall.function?.name ?? toolCall.custom?.name;
 							if (!block.name && name) {
 								block.name = name;
+							}
+							// Gemini OpenAI-compatible endpoints require this signature on replay.
+							const geminiThoughtSignature = toolCall.extra_content?.google?.thought_signature;
+							if (typeof geminiThoughtSignature === "string" && geminiThoughtSignature.length > 0) {
+								block.thoughtSignature = geminiThoughtSignature;
 							}
 
 							let delta = "";
@@ -663,19 +684,6 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 								delta,
 								partial: output,
 							});
-						}
-					}
-
-					const reasoningDetails = (choice.delta as { reasoning_details?: unknown }).reasoning_details;
-					if (Array.isArray(reasoningDetails)) {
-						for (const detail of reasoningDetails) {
-							if (!isOpenAIReasoningDetail(detail)) continue;
-							ensureThinkingBlock("");
-							streamedReasoningDetails ??= [];
-							// Keep provider replay data in the existing signature slot. OpenRouter streams
-							// reasoning_details as deltas: consecutive text/summary deltas are merged into
-							// logical entries, while encrypted entries remain opaque and discrete.
-							appendOpenAIReasoningDetail(streamedReasoningDetails, detail);
 						}
 					}
 				}
@@ -1369,6 +1377,10 @@ export function convertMessages(
 							},
 						};
 					}
+					const geminiThoughtSignature =
+						tc.thoughtSignature && !parseLegacyEncryptedReasoningDetail(tc.thoughtSignature)
+							? tc.thoughtSignature
+							: undefined;
 					return {
 						id: tc.id,
 						type: "function",
@@ -1376,6 +1388,9 @@ export function convertMessages(
 							name: tc.name,
 							arguments: JSON.stringify(tc.arguments),
 						},
+						...(geminiThoughtSignature && {
+							extra_content: { google: { thought_signature: geminiThoughtSignature } },
+						}),
 					};
 				});
 			}
