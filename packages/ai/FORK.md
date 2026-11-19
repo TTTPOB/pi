@@ -1,4 +1,4 @@
-# DSH 的 pi-ai 1.3.0-fork2
+# DSH 的 pi-ai 1.3.0-fork3
 
 基线：Pi tag `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`。本 fork 只交付 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
@@ -43,7 +43,7 @@ env -i PATH="$PATH" HOME="$PWD/../../.artifacts/test-home" NODE_OPTIONS="$NODE_O
 
 ## 独立消费者 smoke
 
-分别创建两个空临时目录，各放一份 `scripts/smoke-dsh-fork.mjs`。消费者 package.json 声明 `private: true`、`type: "module"`，依赖 `@deepseek-ai/dsh-llm-pi-ai: "0.2.2-rc.1"` 与 pi-ai；pnpm-workspace.yaml 中 override **所有** `@earendil-works/pi-ai` 为 tarball 的绝对 `file:` 路径。运行 `pnpm install --ignore-scripts` 和 `node smoke-dsh-fork.mjs patched`。另一目录 override 为官方精确 `1.3.0`，运行 `official` 模式作对照。消费者使用用户级 pnpm store，不创建项目内 cache。临时目录与用户级 store 跨文件系统时，显式指定 `--store-dir <用户级 store 绝对路径> --package-import-method=copy`，避免 pnpm 自动改用 /tmp 的 store。
+分别创建两个空临时目录，各放一份 `scripts/smoke-dsh-fork.mjs`。消费者 package.json 声明 `private: true`、`type: "module"`，依赖 `@deepseek-ai/dsh-llm-pi-ai: "0.2.2-rc.1"` 与 pi-ai；pnpm-workspace.yaml 中 override **所有** `@earendil-works/pi-ai` 为 tarball 的绝对 `file:` 路径。运行 `pnpm install --ignore-scripts` 和 `node smoke-dsh-fork.mjs patched <fork 版本>`。另一目录 override 为官方精确 `1.3.0`，运行 `node smoke-dsh-fork.mjs official 1.3.0` 作对照。消费者使用用户级 pnpm store，不创建项目内 cache。临时目录与用户级 store 跨文件系统时，显式指定 `--store-dir <用户级 store 绝对路径> --package-import-method=copy`，避免 pnpm 自动改用 /tmp 的 store。
 
 smoke 验证实际模块解析、delta 参数快照与最终参数、instructions 不重复、关闭缓存时身份头仍存在及可配置退化检测。所有请求使用内存 mock，不连接真实 provider，不启动 DSH Host。
 

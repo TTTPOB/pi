@@ -106,7 +106,7 @@ jobs:
             writeFileSync("pnpm-workspace.yaml", JSON.stringify({ overrides: { "@earendil-works/pi-ai": source }, allowBuilds: {} }));
           '
           pnpm install --ignore-scripts
-          node smoke.mjs patched
+          node smoke.mjs patched "${{ steps.version.outputs.package_version }}"
       - name: Publish immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
