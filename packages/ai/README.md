@@ -1394,7 +1394,7 @@ interface OpenAICompletionsCompat {
 
 interface OpenAIResponsesCompat {
   maxConsecutiveWhitespaceChars?: number; // Per-output-item UTF-16 whitespace limit (default: 32768; 0 disables this check)
-  maxRepeatedPatternChars?: number; // Per-output-item UTF-16 repeated-pattern limit, periods 1–100 (default: 32768; 0 disables this check)
+  maxRepeatedPatternChars?: number; // Per-output-item UTF-16 repeated-pattern window; aborts when it holds at most one distinct 8-unit sequence per 20 units (below 20 uses strict periodicity; default: 32768; 0 disables this check)
   supportsDeveloperRole?: boolean;   // Whether provider supports `developer` role vs `system` (default: true)
   sessionAffinityFormat?: 'openai' | 'openai-nosession' | 'openrouter'; // Session-affinity header format: 'openai' sends `session_id` and `x-client-request-id`; 'openai-nosession' sends `x-client-request-id`; 'openrouter' sends `x-session-id`. Does not affect the `prompt_cache_key` body param (default: auto-detected)
   supportsLongCacheRetention?: boolean; // Whether provider supports `prompt_cache_retention: "24h"` (default: true)

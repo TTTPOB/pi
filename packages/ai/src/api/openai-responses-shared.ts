@@ -467,14 +467,17 @@ type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 const DEFAULT_MAX_CONSECUTIVE_WHITESPACE_CHARS = 32 * 1024;
 
 /**
- * The same models can loop on a short pattern forever (for example "foo bar"
- * lines, "}}}}", or a repeated two-character phrase). Abort once the tail of one
- * output item is exactly periodic with a period of at most
- * MAX_REPEATED_PATTERN_PERIOD UTF-16 code units for DEFAULT_MAX_REPEATED_PATTERN_CHARS
- * characters. Longer periods are left alone.
+ * The same models can loop on a small set of fragments forever (for example
+ * "foo bar" lines, "}}}}", or quote-and-newline filler whose spacing drifts
+ * between repetitions). Abort once the last `maxRepeatedPatternChars` UTF-16
+ * code units of one output item contain at most one distinct
+ * REPEATED_PATTERN_SEQUENCE_LENGTH-unit sequence per
+ * REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE code units. Counting distinct
+ * sequences tolerates irregular repetition, which a strict period check misses.
  */
 const DEFAULT_MAX_REPEATED_PATTERN_CHARS = 32 * 1024;
-const MAX_REPEATED_PATTERN_PERIOD = 100;
+const REPEATED_PATTERN_SEQUENCE_LENGTH = 8;
+const REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE = 20;
 
 /** Matches the ECMAScript whitespace set without allocating a string per character. */
 function isWhitespaceCode(code: number): boolean {
@@ -495,18 +498,21 @@ function isWhitespaceCode(code: number): boolean {
 /**
  * Streaming detector for degenerate output in one output item.
  *
- * `periodicRuns[p]` counts consecutive most-recent positions `i` where
- * `s[i] === s[i - p]`. A run of `r` at period `p` means the last `r + p`
- * characters are `p`-periodic. The last MAX_REPEATED_PATTERN_PERIOD code units
- * live in a fixed ring, so each character costs one comparison per period and
- * no allocations.
+ * `sequenceHashes` is a ring holding the hash of every
+ * REPEATED_PATTERN_SEQUENCE_LENGTH-unit sequence inside the trailing window of
+ * `maxRepeatedPatternChars` code units, and `sequenceCounts` counts each hash in
+ * that ring, so its size is the number of distinct sequences in the window.
  */
 class DegenerateOutputTracker {
 	private trailingWhitespace = 0;
-	private tailFilled = 0;
-	private tailIndex = 0;
-	private readonly tail = new Uint16Array(MAX_REPEATED_PATTERN_PERIOD);
-	private readonly periodicRuns = new Uint32Array(MAX_REPEATED_PATTERN_PERIOD + 1);
+	private charsSeen = 0;
+	private shortTail = "";
+	private readonly recent = new Uint16Array(REPEATED_PATTERN_SEQUENCE_LENGTH);
+	private sequencesFilled = 0;
+	private sequenceIndex = 0;
+	private readonly sequenceHashes: Int32Array;
+	private readonly sequenceCounts = new Map<number, number>();
+	private readonly maxDistinctSequences: number;
 
 	private readonly maxConsecutiveWhitespaceChars: number;
 	private readonly maxRepeatedPatternChars: number;
@@ -514,12 +520,18 @@ class DegenerateOutputTracker {
 	constructor(maxConsecutiveWhitespaceChars: number, maxRepeatedPatternChars: number) {
 		this.maxConsecutiveWhitespaceChars = maxConsecutiveWhitespaceChars;
 		this.maxRepeatedPatternChars = maxRepeatedPatternChars;
+		this.sequenceHashes = new Int32Array(Math.max(1, maxRepeatedPatternChars - REPEATED_PATTERN_SEQUENCE_LENGTH + 1));
+		this.maxDistinctSequences = Math.max(
+			1,
+			Math.floor(maxRepeatedPatternChars / REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE),
+		);
 	}
 
 	feed(outputIndex: number, delta: string): void {
-		const tail = this.tail;
-		const periodicRuns = this.periodicRuns;
-		const ringSize = MAX_REPEATED_PATTERN_PERIOD;
+		const recent = this.recent;
+		const sequenceHashes = this.sequenceHashes;
+		const sequenceCounts = this.sequenceCounts;
+		const sequenceLength = REPEATED_PATTERN_SEQUENCE_LENGTH;
 		for (let i = 0; i < delta.length; i++) {
 			const code = delta.charCodeAt(i);
 			if (isWhitespaceCode(code)) {
@@ -536,27 +548,51 @@ class DegenerateOutputTracker {
 				this.trailingWhitespace = 0;
 			}
 
-			if (this.maxRepeatedPatternChars === 0) continue;
-			const tailIndex = this.tailIndex;
-			const maxPeriod = this.tailFilled < ringSize ? this.tailFilled : ringSize;
-			for (let period = 1; period <= maxPeriod; period++) {
-				const behind = tailIndex - period;
-				if (tail[behind < 0 ? behind + ringSize : behind] !== code) {
-					periodicRuns[period] = 0;
-					continue;
+			const window = this.maxRepeatedPatternChars;
+			if (window === 0) continue;
+			if (window < REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE) {
+				// A tiny window has too few fragments for diversity to be useful.
+				const tail = (this.shortTail + delta[i]).slice(-window);
+				this.shortTail = tail;
+				if (tail.length === window) {
+					for (let period = 1; period < window; period++) {
+						if (tail.slice(period) === tail.slice(0, -period)) {
+							throw new Error(
+								`Provider stream error: output item ${outputIndex} repeated a ${period}-character pattern for ${window} characters (degenerate output); aborting`,
+							);
+						}
+					}
 				}
-				const run = periodicRuns[period] + 1;
-				periodicRuns[period] = run;
-				if (run + period >= this.maxRepeatedPatternChars) {
-					throw new Error(
-						`Provider stream error: output item ${outputIndex} repeated a ${period}-character pattern for ${this.maxRepeatedPatternChars} characters (degenerate output); aborting`,
-					);
-				}
+				continue;
+			}
+			recent[this.charsSeen % sequenceLength] = code;
+			this.charsSeen++;
+			if (this.charsSeen < sequenceLength) continue;
+
+			// FNV-1a over the last sequenceLength code units, oldest first.
+			let hash = 0x811c9dc5;
+			for (let k = 0; k < sequenceLength; k++) {
+				hash = Math.imul(hash ^ recent[(this.charsSeen + k) % sequenceLength], 0x01000193);
 			}
 
-			tail[tailIndex] = code;
-			this.tailIndex = tailIndex + 1 === ringSize ? 0 : tailIndex + 1;
-			if (this.tailFilled < ringSize) this.tailFilled++;
+			const slot = this.sequenceIndex;
+			if (this.sequencesFilled === sequenceHashes.length) {
+				const evicted = sequenceHashes[slot];
+				const remaining = (sequenceCounts.get(evicted) ?? 1) - 1;
+				if (remaining === 0) sequenceCounts.delete(evicted);
+				else sequenceCounts.set(evicted, remaining);
+			} else {
+				this.sequencesFilled++;
+			}
+			sequenceHashes[slot] = hash;
+			sequenceCounts.set(hash, (sequenceCounts.get(hash) ?? 0) + 1);
+			this.sequenceIndex = slot + 1 === sequenceHashes.length ? 0 : slot + 1;
+
+			if (this.sequencesFilled === sequenceHashes.length && sequenceCounts.size <= this.maxDistinctSequences) {
+				throw new Error(
+					`Provider stream error: output item ${outputIndex} had only ${sequenceCounts.size} distinct ${sequenceLength}-character sequences in its last ${this.maxRepeatedPatternChars} characters (degenerate output); aborting`,
+				);
+			}
 		}
 	}
 }
@@ -577,7 +613,7 @@ export async function processResponsesStream<TApi extends Api>(
 	const degenerateOutputByOutputIndex = new Map<number, DegenerateOutputTracker>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
 	// Feed every provider delta through the degenerate-output tracker for its output
-	// item: a consecutive whitespace flood and a short repeating pattern both abort
+	// item: a consecutive whitespace flood and a low-variety repeating tail both abort
 	// the stream. Throwing here ends the for-await loop, which makes the SDK stream
 	// abort the underlying HTTP request, and surfaces as a retryable assistant error.
 	const trackDegenerateOutput = (outputIndex: number, delta: string): void => {

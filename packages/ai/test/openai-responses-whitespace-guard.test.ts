@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
@@ -177,7 +178,9 @@ describe("OpenAI Responses consecutive whitespace guard", () => {
 	it("resets the run when non-whitespace interrupts it", async () => {
 		// 20000 spaces on both sides of a letter: 40000 whitespace chars in total,
 		// but no single consecutive run reaches the threshold.
-		const { result } = await runStream(textEvents([" ".repeat(20000), "x", " ".repeat(20000), "y"]));
+		const { result } = await runStream(textEvents([" ".repeat(20000), "x", " ".repeat(20000), "y"]), {
+			maxRepeatedPatternChars: 0,
+		});
 
 		expect(result.stopReason).toBe("stop");
 		expect(result.errorMessage).toBeUndefined();
@@ -221,7 +224,7 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe(
-			"Provider stream error: output item 0 repeated a 4-character pattern for 32768 characters (degenerate output); aborting",
+			"Provider stream error: output item 0 had only 4 distinct 8-character sequences in its last 32768 characters (degenerate output); aborting",
 		);
 		expect(isRetryableAssistantError(result)).toBe(true);
 	});
@@ -232,7 +235,7 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 		const { result, eventTypes } = await runStream(functionCallEvents(chunkText(text, 2048)));
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("repeated a 90-character pattern");
+		expect(result.errorMessage).toContain("had only 90 distinct 8-character sequences");
 		expect(isRetryableAssistantError(result)).toBe(true);
 		expect(eventTypes).not.toContain("toolcall_end");
 		const parsedCalls = result.content.filter(
@@ -245,21 +248,44 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 		const { result } = await runStream(textEvents(chunkText("}".repeat(THRESHOLD + 5000), 4096)));
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("repeated a 1-character pattern");
+		expect(result.errorMessage).toContain("had only 1 distinct 8-character sequences");
 		expect(isRetryableAssistantError(result)).toBe(true);
 	});
 
-	it("resets the periodic run when the pattern is broken", async () => {
-		// 30000 chars of "ab", one break, then 30000 more: neither run reaches the
-		// 32768 character threshold.
-		const text = `${"ab".repeat(15000)}x${"ab".repeat(15000)}`;
-		const { result } = await runStream(textEvents(chunkText(text, 4096)));
+	it("aborts repetition whose spacing drifts between repetitions", async () => {
+		// Recorded function-call arguments: quote-and-newline filler with one to six
+		// spaces per repetition, so no period ever holds for long.
+		const filler = readFileSync(new URL("./data/responses-drifting-filler.txt", import.meta.url), "utf8");
+		const { result, eventTypes } = await runStream(functionCallEvents(chunkText(filler, 512)), {
+			maxRepeatedPatternChars: 2000,
+		});
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("8-character sequences in its last 2000 characters");
+		expect(isRetryableAssistantError(result)).toBe(true);
+		expect(eventTypes).not.toContain("toolcall_end");
+	});
+
+	it("aborts repetition that follows varied text", async () => {
+		let varied = "";
+		for (let i = 0; varied.length < 6000; i++) varied += `value_${i * 7919} = compute(${i * 104729});\n`;
+		const text = `${varied}${"ab".repeat(2500)}`;
+		const { result } = await runStream(textEvents(chunkText(text, 512)), { maxRepeatedPatternChars: 5000 });
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("8-character sequences in its last 5000 characters");
+	});
+
+	it("does not abort repetition shorter than the window that gives way to varied text", async () => {
+		// 4000 repeated characters never fill the 5000-character window alone, and
+		// the varied text that completes it carries more than 250 distinct sequences.
+		let varied = "";
+		for (let i = 0; varied.length < 6000; i++) varied += `value_${i * 7919} = compute(${i * 104729});\n`;
+		const text = `${"ab".repeat(2000)}${varied}`;
+		const { result } = await runStream(textEvents(chunkText(text, 512)), { maxRepeatedPatternChars: 5000 });
 
 		expect(result.stopReason).toBe("stop");
 		expect(result.errorMessage).toBeUndefined();
-		const block = result.content[0];
-		expect(block?.type).toBe("text");
-		if (block?.type === "text") expect(block.text).toHaveLength(60001);
 	});
 
 	it("does not abort long varied content", async () => {
@@ -276,9 +302,9 @@ describe("OpenAI Responses repeated-pattern guard", () => {
 		if (block?.type === "text") expect(block.text).toBe(text);
 	});
 
-	it("does not abort patterns longer than the period bound", async () => {
-		// 101 distinct code units: the only true period is 101, above the 100 bound.
-		const pattern = Array.from({ length: 101 }, (_, i) => String.fromCharCode(0x4e00 + i)).join("");
+	it("does not abort repetition with more distinct sequences than the window allows", async () => {
+		// A 32768-character window allows 1638 distinct sequences; this pattern has 1700.
+		const pattern = Array.from({ length: 1700 }, (_, i) => String.fromCharCode(0x4e00 + i)).join("");
 		const text = repeatPattern(pattern, THRESHOLD + 5000);
 		const { result } = await runStream(textEvents(chunkText(text, 2048)));
 
@@ -306,7 +332,17 @@ describe("OpenAI Responses configurable degenerate-output limits", () => {
 		expect(below.result.stopReason).toBe("stop");
 		const at = await runStream(textEvents([text.slice(0, -1), text.slice(-1)]), compat);
 		expect(at.result.stopReason).toBe("error");
-		expect(at.result.errorMessage).toContain(`3-character pattern for ${limit} characters`);
+		expect(at.result.errorMessage).toContain(
+			`had only 3 distinct 8-character sequences in its last ${limit} characters`,
+		);
+	});
+
+	it("distinguishes varied and periodic text with a window shorter than one fragment", async () => {
+		const compat = { maxRepeatedPatternChars: 6 };
+		const varied = await runStream(textEvents(["abcdefg"]), compat);
+		expect(varied.result.stopReason).toBe("stop");
+		const periodic = await runStream(textEvents(["aba", "bab"]), compat);
+		expect(periodic.result.errorMessage).toContain("pattern for 6 characters");
 	});
 
 	it("accumulates whitespace across deltas and resets at non-whitespace within a delta", async () => {
@@ -321,7 +357,7 @@ describe("OpenAI Responses configurable degenerate-output limits", () => {
 		const { result } = await runStream(textEvents([" ".repeat(THRESHOLD)]), {
 			maxConsecutiveWhitespaceChars: 0,
 		});
-		expect(result.errorMessage).toContain("1-character pattern for 32768 characters");
+		expect(result.errorMessage).toContain("had only 1 distinct 8-character sequences in its last 32768 characters");
 	});
 
 	it("disables only repeated-pattern detection when its limit is zero", async () => {

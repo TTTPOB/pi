@@ -1,4 +1,4 @@
-# DSH 的 pi-ai 1.3.0-fork1
+# DSH 的 pi-ai 1.3.0-fork2
 
 基线：Pi tag `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`。本 fork 只交付 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
@@ -11,7 +11,7 @@ DSH `dsh-v0.2.2-rc.1` 在根工作区为 pi-ai 1.3.0 声明 package patch，已�
 1. Anthropic Messages、Bedrock、Mistral、OpenAI Completions、OpenAI Responses shared、pi-messages 不在每次 JSON 工具参数 delta 上解析 JSON，保留原始 delta 和各自结束阶段的解析。六处与 DSH 0.2.2 patch 净行为一致；grammar/custom 工具处理不变。`test/final-tool-arguments.test.ts` 对六种 API 验证 delta 与最终参数。
 2. `OpenAIResponsesCompat.systemPromptFormat?: "input" | "instructions"` 默认 `"input"`。`"instructions"` 将归一后首条系统消息的文本与 sections 放到顶层 instructions，input 不重复该提示。中途系统消息继续使用 1.3.0 transcript 规则：不支持时折叠，支持时保留位置与工具增量。字段现定义于 `src/providers/compat-schema.ts`，类型由 schema 推导。
 3. OpenAI Responses 在 `cacheRetention: "none"` 时保留 sessionId 身份/路由 header，但不发送 prompt_cache_key；显式 header 覆盖规则不变。仅作用于 Responses。
-4. OpenAI Responses 流退化检测：每个输出项分别累计文本、refusal、推理、函数参数及自定义工具输入的 delta；连续空白或周期 1–100 的严格重复达到阈值时中断，以 `degenerate output` 错误标为可重试。`model.compat.maxConsecutiveWhitespaceChars`、`maxRepeatedPatternChars` 默认各为 32768 UTF-16 code units，0 关闭对应检测。纯空白也会命中周期 1，完全关闭需两项均为 0。工具参数未完成时不发 toolcall_end。
+4. OpenAI Responses 流退化检测：每个输出项分别累计文本、refusal、推理、函数参数及自定义工具输入的 delta；连续空白达到阈值，或最近 `maxRepeatedPatternChars` 个 code unit 内不同的 8 字符片段不超过窗口长度的 1/20 时中断（片段计数容忍间距漂移的不规则重复；小于 20 的窗口使用严格周期检测），以 `degenerate output` 错误标为可重试。`model.compat.maxConsecutiveWhitespaceChars`、`maxRepeatedPatternChars` 默认各为 32768 UTF-16 code units，0 关闭对应检测。纯空白也会命中片段计数，完全关闭需两项均为 0。工具参数未完成时不发 toolcall_end。
 
 Pi 1.3.0 没有上述四项等价实现。上游新增的兼容性 schema、configuration_update effort 与结束阶段 JSON 修复逻辑直接沿用，不重复实现。
 

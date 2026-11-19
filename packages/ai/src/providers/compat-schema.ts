@@ -363,7 +363,7 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description:
-					"Repeated-pattern limit per output item, in UTF-16 code units, for periods of 1-100. 0 disables this check.",
+					"Repeated-pattern window per output item, in UTF-16 code units. The stream aborts when the last this-many code units contain at most one distinct 8-unit sequence per 20 code units. Windows below 20 code units use strict periodicity. 0 disables this check.",
 				default: 32768,
 			}),
 		),
