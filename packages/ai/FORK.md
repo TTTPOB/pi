@@ -1,4 +1,4 @@
-# DSH 的 pi-ai 1.3.0-fork3
+# DSH 的 pi-ai 1.3.0-fork4
 
 基线：Pi tag `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`。本 fork 只交付 `@earendil-works/pi-ai`；其他 Pi 子包继续使用官方版本。
 
