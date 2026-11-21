@@ -20,7 +20,6 @@ import type {
 	AssistantMessage,
 	ImageContent,
 	Model,
-	OpenAIResponsesCompat,
 	StopReason,
 	StreamOptions,
 	SystemMessage,
@@ -456,147 +455,6 @@ type ResponsesOutputSlot =
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 
-/**
- * Degenerate upstream models can stream whitespace forever (266k+ consecutive
- * characters observed). Each delta resets idle timeouts, so the stream never
- * ends. Abort once a single output item accumulates this many consecutive
- * trailing whitespace characters. Only a consecutive run counts: a
- * non-whitespace character resets the counter, and total output length is not
- * limited here.
- */
-const DEFAULT_MAX_CONSECUTIVE_WHITESPACE_CHARS = 32 * 1024;
-
-/**
- * The same models can loop on a small set of fragments forever (for example
- * "foo bar" lines, "}}}}", or quote-and-newline filler whose spacing drifts
- * between repetitions). Abort once the last `maxRepeatedPatternChars` UTF-16
- * code units of one output item contain at most one distinct
- * REPEATED_PATTERN_SEQUENCE_LENGTH-unit sequence per
- * REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE code units. Counting distinct
- * sequences tolerates irregular repetition, which a strict period check misses.
- */
-const DEFAULT_MAX_REPEATED_PATTERN_CHARS = 32 * 1024;
-const REPEATED_PATTERN_SEQUENCE_LENGTH = 8;
-const REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE = 20;
-
-/** Matches the ECMAScript whitespace set without allocating a string per character. */
-function isWhitespaceCode(code: number): boolean {
-	if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d || code === 0x0b || code === 0x0c) return true;
-	if (code < 0x80) return false;
-	return (
-		code === 0xa0 ||
-		code === 0x1680 ||
-		code === 0x2028 ||
-		code === 0x2029 ||
-		code === 0x202f ||
-		code === 0x205f ||
-		code === 0x3000 ||
-		code === 0xfeff ||
-		(code >= 0x2000 && code <= 0x200a)
-	);
-}
-/**
- * Streaming detector for degenerate output in one output item.
- *
- * `sequenceHashes` is a ring holding the hash of every
- * REPEATED_PATTERN_SEQUENCE_LENGTH-unit sequence inside the trailing window of
- * `maxRepeatedPatternChars` code units, and `sequenceCounts` counts each hash in
- * that ring, so its size is the number of distinct sequences in the window.
- */
-class DegenerateOutputTracker {
-	private trailingWhitespace = 0;
-	private charsSeen = 0;
-	private shortTail = "";
-	private readonly recent = new Uint16Array(REPEATED_PATTERN_SEQUENCE_LENGTH);
-	private sequencesFilled = 0;
-	private sequenceIndex = 0;
-	private readonly sequenceHashes: Int32Array;
-	private readonly sequenceCounts = new Map<number, number>();
-	private readonly maxDistinctSequences: number;
-
-	private readonly maxConsecutiveWhitespaceChars: number;
-	private readonly maxRepeatedPatternChars: number;
-
-	constructor(maxConsecutiveWhitespaceChars: number, maxRepeatedPatternChars: number) {
-		this.maxConsecutiveWhitespaceChars = maxConsecutiveWhitespaceChars;
-		this.maxRepeatedPatternChars = maxRepeatedPatternChars;
-		this.sequenceHashes = new Int32Array(Math.max(1, maxRepeatedPatternChars - REPEATED_PATTERN_SEQUENCE_LENGTH + 1));
-		this.maxDistinctSequences = Math.max(
-			1,
-			Math.floor(maxRepeatedPatternChars / REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE),
-		);
-	}
-
-	feed(outputIndex: number, delta: string): void {
-		const recent = this.recent;
-		const sequenceHashes = this.sequenceHashes;
-		const sequenceCounts = this.sequenceCounts;
-		const sequenceLength = REPEATED_PATTERN_SEQUENCE_LENGTH;
-		for (let i = 0; i < delta.length; i++) {
-			const code = delta.charCodeAt(i);
-			if (isWhitespaceCode(code)) {
-				this.trailingWhitespace++;
-				if (
-					this.maxConsecutiveWhitespaceChars > 0 &&
-					this.trailingWhitespace >= this.maxConsecutiveWhitespaceChars
-				) {
-					throw new Error(
-						`Provider stream error: output item ${outputIndex} emitted ${this.maxConsecutiveWhitespaceChars} consecutive whitespace characters (degenerate output); aborting`,
-					);
-				}
-			} else {
-				this.trailingWhitespace = 0;
-			}
-
-			const window = this.maxRepeatedPatternChars;
-			if (window === 0) continue;
-			if (window < REPEATED_PATTERN_CHARS_PER_DISTINCT_SEQUENCE) {
-				// A tiny window has too few fragments for diversity to be useful.
-				const tail = (this.shortTail + delta[i]).slice(-window);
-				this.shortTail = tail;
-				if (tail.length === window) {
-					for (let period = 1; period < window; period++) {
-						if (tail.slice(period) === tail.slice(0, -period)) {
-							throw new Error(
-								`Provider stream error: output item ${outputIndex} repeated a ${period}-character pattern for ${window} characters (degenerate output); aborting`,
-							);
-						}
-					}
-				}
-				continue;
-			}
-			recent[this.charsSeen % sequenceLength] = code;
-			this.charsSeen++;
-			if (this.charsSeen < sequenceLength) continue;
-
-			// FNV-1a over the last sequenceLength code units, oldest first.
-			let hash = 0x811c9dc5;
-			for (let k = 0; k < sequenceLength; k++) {
-				hash = Math.imul(hash ^ recent[(this.charsSeen + k) % sequenceLength], 0x01000193);
-			}
-
-			const slot = this.sequenceIndex;
-			if (this.sequencesFilled === sequenceHashes.length) {
-				const evicted = sequenceHashes[slot];
-				const remaining = (sequenceCounts.get(evicted) ?? 1) - 1;
-				if (remaining === 0) sequenceCounts.delete(evicted);
-				else sequenceCounts.set(evicted, remaining);
-			} else {
-				this.sequencesFilled++;
-			}
-			sequenceHashes[slot] = hash;
-			sequenceCounts.set(hash, (sequenceCounts.get(hash) ?? 0) + 1);
-			this.sequenceIndex = slot + 1 === sequenceHashes.length ? 0 : slot + 1;
-
-			if (this.sequencesFilled === sequenceHashes.length && sequenceCounts.size <= this.maxDistinctSequences) {
-				throw new Error(
-					`Provider stream error: output item ${outputIndex} had only ${sequenceCounts.size} distinct ${sequenceLength}-character sequences in its last ${this.maxRepeatedPatternChars} characters (degenerate output); aborting`,
-				);
-			}
-		}
-	}
-}
-
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
 	output: AssistantMessage,
@@ -606,24 +464,7 @@ export async function processResponsesStream<TApi extends Api>(
 ): Promise<void> {
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
-	const compat = model.compat as OpenAIResponsesCompat | undefined;
-	const maxConsecutiveWhitespaceChars =
-		compat?.maxConsecutiveWhitespaceChars ?? DEFAULT_MAX_CONSECUTIVE_WHITESPACE_CHARS;
-	const maxRepeatedPatternChars = compat?.maxRepeatedPatternChars ?? DEFAULT_MAX_REPEATED_PATTERN_CHARS;
-	const degenerateOutputByOutputIndex = new Map<number, DegenerateOutputTracker>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
-	// Feed every provider delta through the degenerate-output tracker for its output
-	// item: a consecutive whitespace flood and a low-variety repeating tail both abort
-	// the stream. Throwing here ends the for-await loop, which makes the SDK stream
-	// abort the underlying HTTP request, and surfaces as a retryable assistant error.
-	const trackDegenerateOutput = (outputIndex: number, delta: string): void => {
-		let tracker = degenerateOutputByOutputIndex.get(outputIndex);
-		if (!tracker) {
-			tracker = new DegenerateOutputTracker(maxConsecutiveWhitespaceChars, maxRepeatedPatternChars);
-			degenerateOutputByOutputIndex.set(outputIndex, tracker);
-		}
-		tracker.feed(outputIndex, delta);
-	};
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
 			output.stopReason = "stop";
@@ -789,7 +630,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.reasoning_summary_text.delta") {
 			const slot = getSlot(event.output_index, "thinking");
 			if (!slot) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			slot.block.thinking += event.delta;
 			stream.push({
 				type: "thinking_delta",
@@ -810,7 +650,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.reasoning_text.delta") {
 			const slot = getSlot(event.output_index, "thinking");
 			if (!slot) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			slot.block.thinking += event.delta;
 			stream.push({
 				type: "thinking_delta",
@@ -821,7 +660,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.output_text.delta") {
 			const slot = getSlot(event.output_index, "text");
 			if (!slot) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			slot.block.text += event.delta;
 			stream.push({
 				type: "text_delta",
@@ -832,7 +670,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.refusal.delta") {
 			const slot = getSlot(event.output_index, "text");
 			if (!slot) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			slot.block.text += event.delta;
 			stream.push({
 				type: "text_delta",
@@ -843,7 +680,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
 			if (!slot || slot.block.partialJson === undefined) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			slot.block.partialJson += event.delta;
 			pushToolCallDelta(slot, event.delta);
 		} else if (event.type === "response.function_call_arguments.done") {
@@ -860,7 +696,6 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
 			if (!slot || !slot.block.customInput) continue;
-			trackDegenerateOutput(event.output_index, event.delta);
 			pushToolCallDelta(
 				slot,
 				appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
@@ -870,8 +705,6 @@ export async function processResponsesStream<TApi extends Api>(
 			if (!slot || !slot.block.customInput) continue;
 			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
 		} else if (event.type === "response.output_item.done") {
-			// The item is complete; a later item may reuse the same output_index.
-			degenerateOutputByOutputIndex.delete(event.output_index);
 			const item = event.item;
 			applyMessagePhaseStopReason(item);
 			const slot = getOrCreateSlot(event.output_index, item);

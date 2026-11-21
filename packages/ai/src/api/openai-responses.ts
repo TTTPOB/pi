@@ -88,12 +88,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 	return "short";
 }
 
-// Stream guard limits are resolved by the shared parser, not the request serializer.
-type OpenAIResponsesRequestCompat = Required<
-	Omit<OpenAIResponsesCompat, "maxConsecutiveWhitespaceChars" | "maxRepeatedPatternChars">
->;
-
-function getCompat(model: Model<"openai-responses">): OpenAIResponsesRequestCompat {
+function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
 	return {
 		supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
 		systemPromptFormat: model.compat?.systemPromptFormat ?? "input",
@@ -114,7 +109,7 @@ function getCompat(model: Model<"openai-responses">): OpenAIResponsesRequestComp
 function getConfigurationUpdateEffort(
 	model: Model<"openai-responses">,
 	options: OpenAIResponsesOptions | undefined,
-	compat: OpenAIResponsesRequestCompat,
+	compat: Required<OpenAIResponsesCompat>,
 ): string | undefined {
 	if (
 		!compat.supportsMidConvoEffort ||
@@ -128,7 +123,7 @@ function getConfigurationUpdateEffort(
 }
 
 function getPromptCacheRetention(
-	compat: OpenAIResponsesRequestCompat,
+	compat: Required<OpenAIResponsesCompat>,
 	cacheRetention: CacheRetention,
 ): "24h" | undefined {
 	return cacheRetention === "long" && compat.supportsLongCacheRetention && !compat.supportsExplicitPromptCacheMode
@@ -137,7 +132,7 @@ function getPromptCacheRetention(
 }
 
 function getPromptCacheOptions(
-	compat: OpenAIResponsesRequestCompat,
+	compat: Required<OpenAIResponsesCompat>,
 	cacheRetention: CacheRetention,
 ): ResponseCreateParamsStreaming["prompt_cache_options"] {
 	if (!compat.supportsExplicitPromptCacheMode) return undefined;
@@ -343,7 +338,7 @@ function buildParams(
 	model: Model<"openai-responses">,
 	context: TranscriptContext,
 	options: OpenAIResponsesOptions | undefined,
-	compat: OpenAIResponsesRequestCompat,
+	compat: Required<OpenAIResponsesCompat>,
 	grammarToolInputProperties: ReadonlyMap<string, string>,
 	configurationUpdateEffort: string | undefined,
 ) {

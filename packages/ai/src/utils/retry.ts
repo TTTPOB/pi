@@ -96,12 +96,6 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// retry policy so callers can surface/abort the backoff (#1123).
 	"retry delay",
 
-	// Degenerate-output guard in the OpenAI Responses stream parser. The stream is
-	// aborted when one output item emits a whitespace flood or a low-variety
-	// repeating tail. No tool call has run at that point, so restarting the turn
-	// is safe.
-	"degenerate output",
-
 	// Explicit retry guidance emitted mid-stream by OpenAI Responses and Bedrock
 	// stream exceptions (#6019).
 	"you can retry your request",

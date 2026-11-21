@@ -351,22 +351,6 @@ export const OpenAICompletionsCompatSchema = Type.Object(
 
 export const OpenAIResponsesCompatSchema = Type.Object(
 	{
-		maxConsecutiveWhitespaceChars: Type.Optional(
-			Type.Integer({
-				minimum: 0,
-				description:
-					"Consecutive whitespace limit per output item, in UTF-16 code units. 0 disables this check. Whitespace may still trigger the repeated-pattern check.",
-				default: 32768,
-			}),
-		),
-		maxRepeatedPatternChars: Type.Optional(
-			Type.Integer({
-				minimum: 0,
-				description:
-					"Repeated-pattern window per output item, in UTF-16 code units. The stream aborts when the last this-many code units contain at most one distinct 8-unit sequence per 20 code units. Windows below 20 code units use strict periodicity. 0 disables this check.",
-				default: 32768,
-			}),
-		),
 		systemPromptFormat: Type.Optional(
 			Type.Union([Type.Literal("input"), Type.Literal("instructions")], {
 				description:

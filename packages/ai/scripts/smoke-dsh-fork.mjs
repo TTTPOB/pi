@@ -59,23 +59,3 @@ assert.equal(headers.get("session_id"), patched ? "session-123" : null);
 assert.equal(headers.get("x-client-request-id"), patched ? "session-123" : null);
 assert.equal(payload.input.filter((message) => message.role === "system").length, patched ? 0 : 1);
 console.log(JSON.stringify({ version, patched, piResolvedFromAdapter: adapterRequire.resolve(piEntry, esmResolveOptions), deltaArguments: deltas, instructions: payload.instructions ?? null, sessionHeader: headers.get("session_id"), cacheKey: payload.prompt_cache_key ?? null }, null, 2));
-if (patched) {
-	for (const [compat, text, expectedError] of [
-		[{ maxConsecutiveWhitespaceChars: 5, maxRepeatedPatternChars: 0 }, "    ", undefined],
-		[{ maxConsecutiveWhitespaceChars: 5, maxRepeatedPatternChars: 0 }, "     ", "5 consecutive whitespace"],
-		[{ maxConsecutiveWhitespaceChars: 0, maxRepeatedPatternChars: 6 }, "ababab", "pattern for 6 characters"],
-		[{ maxConsecutiveWhitespaceChars: 0, maxRepeatedPatternChars: 0 }, " ".repeat(32769), undefined],
-	]) {
-		const result = await responses({ ...model, api: "openai-responses", compat }, context, {
-			apiKey: "test",
-			fetch: async () => sse([
-				{ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_guard", role: "assistant", content: [] } },
-				{ type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_guard", delta: text },
-				{ type: "response.completed", response: { status: "completed" } },
-			]),
-		}).result();
-		assert.equal(result.stopReason, expectedError ? "error" : "stop");
-		if (expectedError) assert.ok(result.errorMessage.includes(expectedError));
-	}
-	console.log("Packed Responses configurable guard: passed");
-}
